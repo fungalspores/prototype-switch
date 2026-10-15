@@ -1,0 +1,39 @@
+FROM devkitpro/devkita64@sha256:1fc388c3a0d34bd2045a6dadcb1020e069d5f876a187fd705de14b4440c00282
+
+# Pre-install all required packages
+RUN apt-get update && \
+    apt-get install -y \
+        python3-pip python3-setuptools python3-wheel \
+        ninja-build pkg-config flex bison curl \
+        libclang-dev clang cmake git \
+        llvm-15-dev libllvmspirvlib-15-dev libclc-15-dev libclang-15-dev \
+    && apt-get clean
+
+# Pre-install all Python packages
+RUN pip3 install --break-system-packages meson mako
+
+# The Horizon backend uses the public libnx NVIDIA channel/ioctl API shipped by
+# the devkitPro base image. No ignored local libnx checkout or private ABI patch
+# is needed to reproduce the build.
+
+# Mesa's in-tree Horizon backend and Nouveau compatibility facade replace the
+# old external libdrm_nouveau portlib.
+
+# Build and install SPIRV-Tools (mesa 25.3 requires >= 2024.1)
+RUN cd /tmp && \
+    git clone --depth 1 --branch vulkan-sdk-1.3.290.0 https://github.com/KhronosGroup/SPIRV-Tools.git && \
+    git clone --depth 1 --branch vulkan-sdk-1.3.290.0 https://github.com/KhronosGroup/SPIRV-Headers.git SPIRV-Tools/external/spirv-headers && \
+    cd SPIRV-Tools && mkdir build && cd build && \
+    cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release -DSPIRV_SKIP_TESTS=ON && \
+    make -j4 && make install && \
+    rm -rf /tmp/SPIRV-Tools
+
+ENV CARGO_BUILD_JOBS=4
+
+# Install Rust nightly with rust-src for -Zbuild-std and bindgen for NAK
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly && \
+    . $HOME/.cargo/env && \
+    rustup component add rust-src && \
+    cargo install bindgen-cli cbindgen
+
+ENV PATH="/root/.cargo/bin:${PATH}"

@@ -1,0 +1,13 @@
+﻿# Prototype for Nintendo Switch: codegen with the Horizon-patched ReXGlue SDK
+# (switch\sdk, v0.10.0 + project8-sw patches). Shares the hand-written
+# analysis overrides with the PC project.
+
+[project]
+name = "prototype"
+sdk_version = "0.10.0"
+game_root = "game"
+
+[entrypoint]
+file_path = "game/default.xex"
+out_directory_path = "generated/default"
+includes = ["overrides.toml"]

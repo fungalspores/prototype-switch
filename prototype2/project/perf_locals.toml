@@ -1,0 +1,21 @@
+# Code generation for speed (WORKLOG #84), as Mass Effect NX perf_overrides.toml (t219: +9 % fps). Root keys.
+# Guest registers as C++ locals instead of PPCContext fields in memory. skip_msr / reserved_as_local NOT used:
+# Prototype 2 needs its interrupt-region locks (p2_msr_lock_mode).
+cr_as_local = true
+non_volatile_as_local = true
+xer_as_local = true
+ctr_as_local = true
+
+[functions]
+# reference/masseffect-nx/tools/read_before_write.py on code generated without marks flagged 26 functions:
+# - kept in ctx (share_registers): guest setjmp (saves r14-r31/cr into the jmp_buf), the fiber switch region,
+#   and a fragment entered by a branch that reads its parent's r31.
+# - not marked: SEH-framed ordinary functions (r31 frame pointer; the reads are on exception-handler paths), whose
+#   __savegprlr would be elided if marked (Mass Effect NX: marking ordinary functions corrupted callers);
+#   data decoded as code (lwz r17..r21 runs), never executed; xor-self and ~x+x idioms.
+"0x82C325C0" = { share_registers = true }
+"0x82C49250" = { share_registers = true }
+"0x82C3E9FC" = { share_registers = true }
+# Non-ABI pair: the skinning constant helper returns v14 to its caller (tools/find_nonvolatile_live_in.py).
+"0x829F4C58" = { share_registers = true }
+"0x829F5978" = { share_registers = true }

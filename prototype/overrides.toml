@@ -1,0 +1,83 @@
+# Prototype (4156084E) - hand-written analysis overrides for default.xex.
+
+# XAPI fibers are linked into the title. Swap them for the runtime's host-fiber
+# versions: the guest SwitchToFiber swaps r1/LR by hand, which recompiled code
+# cannot follow. Identified by KTHREAD.fiber_ptr (r13+256 -> +0x164) accesses,
+# 0xA50-byte X_FIBER_CONTEXT allocations and SetLastError 1280/1281.
+[rexcrt]
+ConvertThreadToFiber = 0x82A53470
+ConvertFiberToThread = 0x82A53500
+CreateFiber = 0x82A53550    # MmCreateKernelStack, start stub 0x82A5ECE0
+DeleteFiber = 0x82A53630
+SwitchToFiber = 0x82A53690  # b 0x82A5ECF0 (register save/restore)
+
+# Tail-call targets the analyzer left outside any function (first codegen run).
+[functions]
+0x826B7700 = {}  # b from 0x826B8158
+0x8232E5B8 = {}  # b from 0x82418CE8
+0x82B48530 = {}  # b from 0x82B466CC
+0x82B500A0 = {}  # b from 0x82B466D4 (second run)
+
+# sub_82A5ECE0 ends in a call to KeBugCheck, which never returns; the analyzer
+# ran on into the next function (context capture: r13 thread, mfcr), which
+# sub_82A53690 reaches with b 0x82A5ECF0. Split them.
+0x82A5ECE0 = { end = 0x82A5ECF0 }
+0x82A5ECF0 = {}
+
+# Reached only through function pointers; found by running the PC build.
+0x82B4B000 = {}  # run 2: right after audio init
+
+# tools/pointer_scan.py: data words pointing into code right after a function
+# end, not a known function or label. Mostly MSVC this-adjustor thunks
+# (addi r3,r3,-N; b method) referenced from vtables. Left out: import thunks
+# (0x82BA7xxx, words 0x0101xxxx), zero padding, and the __except landing pads
+# named by the SEH scope tables at 0x821E03D8..0x821E07A0.
+0x823115D8 = {}  # ptr at 0x82DA4D14
+0x82384370 = {}  # ptr at 0x82DA9648
+0x82384380 = {}  # ptr at 0x82DA9664
+0x827D2250 = {}  # ptr at 0x82C9E378
+0x827D2758 = {}  # ptr at 0x82C9E324
+0x827D2748 = { size = 4 }  # b 0x827D2560, tail of the 0x827D2250 thunk
+0x827D3078 = { size = 4 }  # b 0x827D2760; vtable 0x82C9E320, also a label in 0x827D2760 (run 9, loading)
+0x82B42248 = {}  # ptr at 0x8210FF94 (+4)
+0x82B46690 = {}  # ptr at 0x82110260
+0x82B466B0 = {}  # ptr at 0x82110230
+0x82B46AB0 = {}  # ptr at 0x82110248
+0x82B488E0 = {}  # ptr at 0x82110264 (+1)
+0x82B48910 = {}  # ptr at 0x821102A0 (+1)
+0x82B48918 = {}  # ptr at 0x82110370
+0x82B48930 = {}  # ptr at 0x8211029C (+1)
+0x82B48938 = {}  # ptr at 0x82110330
+0x82B62090 = {}  # ptr at 0x821104A8 (+4)
+0x82B620D8 = {}  # ptr at 0x8211049C (+4)
+
+# pointer_scan.py pass 2: addresses built in code with lis+addi (callbacks,
+# vcall thunks lwz r12,0(r3)..bctr, static init/exit routines, tails after b).
+# Jump tables, import thunks and SEH landing pads are filtered out by the tool.
+0x822EC118 = {}  # ptr at 0x822EDEBC
+0x822EC140 = {}  # ptr at 0x822EDF28
+0x823672D8 = {}  # ptr at 0x82367FC0
+0x82367728 = {}  # ptr at 0x822637E4 (+2)
+0x823904A8 = {}  # ptr at 0x823911B0
+0x823904B8 = {}  # ptr at 0x8239007C (+1)
+0x823904C8 = {}  # ptr at 0x8239121C
+0x823904D8 = {}  # ptr at 0x82391258
+0x823904E8 = {}  # ptr at 0x82391300
+0x823904F8 = {}  # ptr at 0x82391174
+0x82390508 = {}  # ptr at 0x82391270
+0x823A03E8 = {}  # ptr at 0x823A2DC4
+0x823A0430 = {}  # ptr at 0x823A2F1C
+0x8256BBC0 = {}  # ptr at 0x8256D57C
+0x82664A00 = {}  # ptr at 0x82672748
+0x82664A88 = {}  # ptr at 0x82674218
+0x82664A98 = {}  # ptr at 0x82674258
+0x82664AA8 = {}  # ptr at 0x82674298
+0x82664AB8 = {}  # ptr at 0x826747E8
+0x82665540 = {}  # ptr at 0x826761C0
+0x82665620 = {}  # ptr at 0x82676540
+0x82665630 = {}  # ptr at 0x82676580
+0x827F50A0 = {}  # ptr at 0x827F66CC
+0x8288F880 = {}  # ptr at 0x82890A84 (+1)
+0x828949F8 = {}  # ptr at 0x8238FE28 (+3)
+0x82894A08 = {}  # ptr at 0x8238FED4 (+2)
+0x828B5060 = {}  # ptr at 0x82890964 (+1)

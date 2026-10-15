@@ -1,0 +1,13 @@
+generated/
+build/
+out/
+release/Prototype-*/
+game/
+game_root/
+assets/
+*.nro
+*.nsp
+*.elf
+prod.keys
+title.keys
+forwarder/loader/
