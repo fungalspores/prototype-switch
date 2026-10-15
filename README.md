@@ -23,7 +23,7 @@ Ready builds (NROs, settings, HOME-menu NSP forwarders): see **Releases**.
 |---|---|---|
 | Port | this project (fungalspores) | [penettrator](https://github.com/penettrator/prototype2-nx), built from his sources with our fixes |
 | Picture | native 1280x720 | 960x544 + FSR 1 (the original release: 640x352) |
-| FPS* | menus and cutscenes 30-60, gameplay 11-25 | city 25-30 |
+| FPS* | menus and cutscenes 30-60, gameplay 25-30 | city 25-30 |
 | Sound | yes | yes |
 | Saves | yes (fixed) | yes |
 
