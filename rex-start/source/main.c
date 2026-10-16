@@ -35,8 +35,8 @@ typedef struct
     const char *key;
     const char *title_ru, *title_en;
     const char *note_ru, *note_en;
-    const char *values[8];                          /* NULL-terminated, written as they are */
-    const char *shown[8];                           /* how a value is shown */
+    const char *values[10];                          /* NULL-terminated, written as they are */
+    const char *shown[10];                           /* how a value is shown */
 } option;
 
 static const option options[] =
@@ -45,8 +45,8 @@ static const option options[] =
     { "prototype2", "p2_render_width", "Разрешение", "Resolution",
       "Внутреннее, растягивается FSR. Больше — чётче, но тяжелее для видеокарты.",
       "Internal, scaled with FSR. Higher is sharper but costs the GPU more.",
-      { "640", "800", "960", "1040", "1200", NULL },
-      { "640x352", "800x448", "960x544", "1040x592", "1200x672", NULL } },
+      { "640", "720", "800", "880", "960", "1040", "1120", "1200", NULL },
+      { "640x352", "720x400", "800x448", "880x496", "960x544", "1040x592", "1120x624", "1200x672", NULL } },
     { "prototype2", "p2_native_texture_lod_bias", "Резкость текстур", "Texture sharpness",
       "Меньше — резче текстуры вдали.", "Lower is sharper far textures.",
       { "1.0", "0.5", "0.0", NULL }, { "мягко / soft", "средне / medium", "резко / sharp", NULL } },
@@ -55,28 +55,44 @@ static const option options[] =
       { "1", "2", "4", NULL }, { "выкл / off", "2x", "4x", NULL } },
     { "prototype2", "p2_geo_lod_bias_scale", "Детализация моделей", "Model detail",
       "Меньше — детальнее модели вблизи. Грузит процессор.", "Lower is more detail nearby. Costs the CPU.",
-      { "4.0", "2.0", "1.0", NULL }, { "низкая / low", "средняя / medium", "высокая / high", NULL } },
+      { "6.0", "4.0", "2.0", "1.0", NULL },
+      { "мин / lowest", "низкая / low", "средняя / medium", "высокая / high", NULL } },
     { "prototype2", "p2_shadow_range_scale", "Дальность теней", "Shadow distance",
       "Тени дальних объектов.", "Shadows of far objects.",
-      { "0.3", "0.5", "0.7", "1.0", NULL }, { "30%", "50%", "70%", "100%", NULL } },
+      { "0.0", "0.2", "0.3", "0.5", "0.7", "1.0", NULL },
+      { "выкл / off", "20%", "30%", "50%", "70%", "100%", NULL } },
     { "prototype2", "p2_ped_max_scale", "Пешеходы", "Pedestrians",
       "Сильнее всего грузит процессор.", "Costs the CPU the most.",
-      { "0.15", "0.3", "0.5", "1.0", NULL }, { "15%", "30%", "50%", "100%", NULL } },
+      { "0.0", "0.1", "0.2", "0.3", "0.5", "1.0", NULL },
+      { "нет / none", "10%", "20%", "30%", "50%", "100%", NULL } },
     { "prototype2", "p2_vehicle_max_scale", "Машины", "Vehicles",
       "Тоже грузит процессор.", "Costs the CPU too.",
-      { "0.1", "0.15", "0.3", "1.0", NULL }, { "10%", "15%", "30%", "100%", NULL } },
+      { "0.0", "0.05", "0.1", "0.15", "0.3", "1.0", NULL },
+      { "нет / none", "5%", "10%", "15%", "30%", "100%", NULL } },
+    { "prototype2", "p2_skin_half_rate", "Анимация через кадр", "Half-rate skinning",
+      "Пересчёт анимации моделей через кадр: больше кадров, анимация чуть резче.",
+      "Skin meshes every other frame: more FPS, slightly steppier animation.",
+      { "false", "true", NULL }, { "выкл / off", "вкл / on", NULL } },
+    { "prototype2", "p2_native_skip_depth_prepass", "Пропуск depth prepass", "Skip depth prepass",
+      "Экономит время видеокарты; возможны мелкие артефакты.",
+      "Saves GPU time; small artefacts are possible.",
+      { "false", "true", NULL }, { "выкл / off", "вкл / on", NULL } },
     /* Prototype */
     { "prototype", "proto_render_width", "Разрешение", "Resolution",
       "Внутреннее, растягивается FSR. Меньше — быстрее, но мыльнее.",
       "Internal, scaled with FSR. Lower is faster but softer.",
-      { "1280", "1120", "960", "800", NULL },
-      { "1280x720", "1120x624", "960x544", "800x448", NULL } },
+      { "1280", "1120", "1040", "960", "880", "800", "720", "640", NULL },
+      { "1280x720", "1120x624", "1040x592", "960x544", "880x496", "800x448", "720x400", "640x352", NULL } },
     { "prototype", "p2_native_texture_lod_bias", "Резкость текстур", "Texture sharpness",
       "Меньше — резче текстуры вдали.", "Lower is sharper far textures.",
       { "1.0", "0.5", "0.0", NULL }, { "мягко / soft", "средне / medium", "резко / sharp", NULL } },
     { "prototype", "p2_native_max_anisotropy", "Анизотропия", "Anisotropic filtering",
       "Чёткость полов и дорог под углом.", "Floors and roads at an angle.",
       { "1", "2", "4", NULL }, { "выкл / off", "2x", "4x", NULL } },
+    { NULL, "p2_guest_core_mask", "Четвёртое ядро", "Fourth CPU core",
+      "15 — игре доступны все 4 ядра (быстрее, но греет), 7 — только 0-2.",
+      "15 = all four cores for the game (faster, hotter), 7 = cores 0-2 only.",
+      { "15", "7", NULL }, { "вкл / on", "выкл / off", NULL } },
     /* both games */
     { NULL, "present_effect", "Масштабирование", "Upscaling",
       "Как картинка растягивается на экран.", "How the picture is scaled to the screen.",
@@ -94,6 +110,8 @@ static char settings_path[FS_MAX_PATH];
 static char game_name[128];
 static char *settings_text;
 static int chosen[OPTION_COUNT];
+static int original[OPTION_COUNT];                 /* value the TOML had (0 if the key was missing) */
+static bool written[OPTION_COUNT];                 /* key already rewritten in place */
 static int shown_list[OPTION_COUNT];               /* options present in this TOML */
 static int shown_count;
 
@@ -189,11 +207,14 @@ static void read_current( void )
         const char *now = value_of( options[i].key, buffer, sizeof(buffer) );
 
         chosen[i] = 0;
+        original[i] = 0;
         if (options[i].game && strcmp( options[i].game, program_stem )) continue;  /* another game's */
-        if (!now) continue;                         /* this port does not have it */
+        /* A key missing from the TOML is still offered: value 0 is the port's default,
+         * and write_settings appends the key only if the user moves away from it. */
         shown_list[shown_count++] = i;
+        if (!now) continue;
         for (v = 0; options[i].values[v]; v++)
-            if (!strcmp( now, options[i].values[v] )) { chosen[i] = v; break; }
+            if (!strcmp( now, options[i].values[v] )) { chosen[i] = v; original[i] = v; break; }
     }
 }
 
@@ -217,9 +238,11 @@ static void write_settings( void )
     FILE *file = fopen( settings_path, "wb" );
     const char *line = settings_text;
     const char *height = NULL, *height_key = NULL;
+    bool height_done = false;
     int s;
 
     if (!file) return;
+    memset( written, 0, sizeof(written) );
     for (s = 0; s < shown_count; s++)
     {
         int i = shown_list[s];
@@ -240,6 +263,7 @@ static void write_settings( void )
             if (line_is_key( line, options[shown_list[s]].key )) mine = shown_list[s];
         if (mine >= 0)
         {
+            written[mine] = true;
             /* a string value keeps its quotes: present_effect = "fsr" */
             const char *eq = strchr( line, '=' );
             bool quoted = eq && (!end || eq < end) && strchr( eq, '"' ) && (!end || strchr( eq, '"' ) < end);
@@ -247,10 +271,29 @@ static void write_settings( void )
                      options[mine].values[chosen[mine]], end ? (crlf ? "\r\n" : "\n") : "" );
         }
         else if (height && line_is_key( line, height_key ))
+        {
+            height_done = true;
             fprintf( file, "%s = %s%s", height_key, height, end ? (crlf ? "\r\n" : "\n") : "" );
+        }
         else
             fwrite( line, 1, length, file );
         line = end ? end + 1 : NULL;
+    }
+    /* Keys the TOML did not have: appended only if the user changed them from the default. */
+    for (s = 0; s < shown_count; s++)
+    {
+        int i = shown_list[s];
+        const char *v = options[i].values[chosen[i]];
+        bool quoted = v[0] >= 'a' && v[0] <= 'z' && strcmp( v, "true" ) && strcmp( v, "false" );
+
+        if (written[i] || chosen[i] == original[i]) continue;
+        fprintf( file, quoted ? "%s = \"%s\"\n" : "%s = %s\n", options[i].key, v );
+        if (height && !height_done && height_key &&
+            (!strcmp( options[i].key, "p2_render_width" ) || !strcmp( options[i].key, "proto_render_width" )))
+        {
+            fprintf( file, "%s = %s\n", height_key, height );
+            height_done = true;
+        }
     }
     fclose( file );
 }

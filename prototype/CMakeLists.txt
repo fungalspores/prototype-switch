@@ -65,7 +65,7 @@ set_source_files_properties("${GEN}/prototype_register.cpp"
 foreach(t prototype prototype_recomp)
     target_compile_options(${t} PRIVATE -ffp-contract=off -fno-strict-aliasing)
 endforeach()
-rexglue_switch_add_nro(prototype NAME "Prototype" AUTHOR "fungalspores" VERSION "1.0.0" ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.jpg")
+rexglue_switch_add_nro(prototype NAME "Prototype" AUTHOR "fungalspores" VERSION "1.1.0" ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.jpg")
 target_link_options(prototype PRIVATE "LINKER:--wrap=bqQueueBuffer")
 
 # Profile-guided optimization (after Prototype 2 NX switch/CMakeLists.txt, WORKLOG #126/#127).

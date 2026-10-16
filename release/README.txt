@@ -17,11 +17,11 @@ PROTOTYPE и PROTOTYPE 2 для Nintendo Switch — 1.1.0
 УСТАНОВКА
 =====================================================================
 1. Скопируйте папку switch из раздачи в корень SD-карты. Получится:
+     sdmc:/switch/rex-start.nro                экран настроек (общий для обеих игр)
      sdmc:/switch/prototype-nx/prototype.nro
      sdmc:/switch/prototype-nx/prototype.toml
      sdmc:/switch/prototype2-nx/prototype2.nro
      sdmc:/switch/prototype2-nx/prototype2.toml
-     sdmc:/switch/rex-start.nro            (экран настроек перед игрой)
 
 2. Положите файлы своей игры:
      Prototype   -> sdmc:/switch/prototype-nx/game/      (внутри должен лежать default.xex)
@@ -38,8 +38,8 @@ PROTOTYPE и PROTOTYPE 2 для Nintendo Switch — 1.1.0
 4. Запускайте с иконки на HOME. Первые 5 секунд показывается экран игры:
    нажмите + — откроются настройки (разрешение, текстуры, язык и т. д.),
    ничего не нажимайте или нажмите A — игра запустится.
-   Без NSP: удерживайте R при запуске любой установленной игры, в Homebrew-меню выберите
-   Prototype / Prototype 2. Через Альбом НЕ запускайте — не хватит памяти.
+   Без NSP: в Homebrew-меню запускайте sdmc:/switch/rex-start.nro — он откроет нужную игру
+   (его собирает игра из своей папки; первый аргумент — путь к NRO). Через Альбом НЕ запускайте — не хватит памяти.
 
 =====================================================================
 ПРОВЕРЕННЫЕ ИЗДАНИЯ
@@ -62,7 +62,7 @@ Prototype:
   p2_native_texture_lod_bias, p2_native_max_anisotropy — резкость текстур и анизотропия
   present_effect                      "fsr" или "bilinear"
 
-Prototype 2, графика (наш пресет, у автора порта 0.2.0 было 800x448):
+Prototype 2, графика (по умолчанию — значения автора порта 0.2.0, меняются экраном настроек):
   p2_render_width / p2_render_height  внутреннее разрешение, 960x544 + FSR (было 640x352)
   p2_native_texture_lod_bias          резкость текстур, 0.5 (было 1.0)
   p2_native_max_anisotropy            анизотропия, 2 (было 1)
