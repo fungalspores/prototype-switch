@@ -7,6 +7,7 @@
 // layout has no cost.
 
 #include "native_textures.h"
+#include "texture_eviction.h"
 #include "native_vk_extra.h"
 #include "native_hash.h"
 #include "composite_tile_index.h"
@@ -511,6 +512,9 @@ REXCVAR_DEFINE_BOOL(p2_native_targeted_memo, true, "Prototype2",
                     "for several addresses) forgets only the fetch answers whose memory range holds "
                     "its address. false = the whole answer memo is dropped (every texture of the "
                     "frame looked up again in full after it)");
+REXCVAR_DEFINE_BOOL(p2_native_sync_color_lut, true, "Prototype2",
+                    "Upload small RGBA 3D grading LUTs immediately after a long menu, "
+                    "instead of drawing a black scene while ordinary textures stream");
 REXCVAR_DEFINE_BOOL(p2_native_3d_textures, true, "Prototype2",
                     "Upload 3D (volume) textures as Vulkan 3D images (Prototype 2 colour grading LUT). "
                     "false = drawn with an empty texture, as before");
@@ -556,6 +560,10 @@ REXCVAR_DEFINE_UINT32(p2_native_sync_texture_frame_kb, 0, "Prototype2",
 // all made on the spot, and a level load made 116 in one frame (180 ms).
 constexpr VkDeviceSize kStreamBytes = 0;
 
+REXCVAR_DEFINE_UINT32(p2_native_texture_cache_mb, 128, "Prototype2",
+    "Keep idle material textures while the cached host payload is below this many MiB; "
+    "0 restores age-only eviction. Driver overhead and in-flight images are additional");
+
 struct TextureCache::Texture {
   VkImage image = VK_NULL_HANDLE;
   VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -566,6 +574,8 @@ struct TextureCache::Texture {
   // Views by (host swizzle << 1 | signed).
   std::unordered_map<uint32_t, VkImageView> views;
   uint64_t last_used_frame = 0;
+  // Host mip payload, including layers; excludes driver allocation overhead.
+  uint64_t payload_bytes = 0;
   // Submission that last sampled it: the image can be rewritten in place only
   // before the first use in a submission, since uploads run ahead of it.
   uint64_t last_used_submission = 0;
@@ -585,6 +595,7 @@ struct TextureCache::Impl {
   // uploaded again in place: allocating a new image each time was a kernel
   // round trip (memory map) per changed texture, about 50 a second in play.
   std::unordered_map<uint64_t, std::unique_ptr<Texture>> textures;
+  uint64_t cached_payload_bytes = 0, cache_evictions = 0;
   // Layout key hash -> content hash of the last check, per frame, so the data
   // of a texture used by many draws is hashed once per frame.
   struct Checked {
@@ -1261,24 +1272,47 @@ void TextureCache::BeginFrame(uint64_t frame, uint64_t completed_frame) {
       ++r;
     }
   }
-  // Evict textures unused for about 20 seconds; the old content of changing
-  // textures (a video, a render-to-texture the CPU fills) is what this frees.
-  constexpr uint64_t kEvictFrames = 600;
+  // Age alone must not discard the world while the map is open. Retain a
+  // bounded working set, and trim the oldest idle entries only under pressure.
+  // Active and streaming images are never evicted by this policy.
   if (frame % 60 == 0) {
-    for (auto t = im.textures.begin(); t != im.textures.end();) {
+    uint64_t payload = 0;
+    struct Candidate { uint64_t key, last_used; };
+    std::vector<Candidate> candidates;
+    for (const auto& [key, texture] : im.textures) {
+      payload += texture->payload_bytes;
+      if (IdleTextureExpired(frame, texture->last_used_frame, bool(texture->stream)))
+        candidates.push_back({key, texture->last_used_frame});
+    }
+    const uint64_t budget = uint64_t(REXCVAR_GET(p2_native_texture_cache_mb)) << 20;
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+      return a.last_used < b.last_used;
+    });
+    std::unordered_set<const void*> evicted;
+    for (const auto& candidate : candidates) {
+      if (payload <= budget) break;
+      auto t = im.textures.find(candidate.key);
       Texture& texture = *t->second;
-      if (texture.stream) {
-        ++t;
-        continue;
-      }
-      if (texture.last_used_frame + kEvictFrames < frame) {
-        std::vector<VkImageView> views;
-        for (auto& [k, v] : texture.views) views.push_back(v);
-        im.Retire(texture.image, texture.memory, std::move(views), texture.last_used_frame);
-        t = im.textures.erase(t);
-      } else {
-        ++t;
-      }
+      std::vector<VkImageView> views;
+      for (auto& [k, v] : texture.views) views.push_back(v);
+      // The CPU caches must stop returning this view/pointer now, rather
+      // than waiting until the GPU reaper destroys the old image next frame.
+      evicted.insert(&texture);
+      im.ForgetViews(views);
+      im.Retire(texture.image, texture.memory, std::move(views), texture.last_used_frame);
+      payload -= texture.payload_bytes;
+      im.textures.erase(t);
+    }
+    im.cached_payload_bytes = payload;
+    im.cache_evictions += evicted.size();
+    if (!evicted.empty()) {
+      ++im.views_epoch;
+      ++im.answers_epoch;
+      im.memo.for_each_value([&](Impl::Memo& memo) {
+        InvalidateEvictedTextureMemo(memo,[&](const void* texture){return evicted.contains(texture);});
+      });
+      if (evicted.contains(im.out_texture)) im.out_texture = nullptr;
+      if (evicted.contains(im.last_texture)) im.last_texture = nullptr;
     }
     if (im.checked.size() > 16384) {
       im.checked.clear();
@@ -1298,6 +1332,9 @@ void TextureCache::BeginFrame(uint64_t frame, uint64_t completed_frame) {
                   double(stats_.memo_dropped - last.memo_dropped) / frames,
                   double(stats_.memo_full_clears - last.memo_full_clears) / frames);
     }
+    REXLOG_INFO("[native] material cache: {} live, {} MiB payload, {} MiB retention budget, {} evicted total",
+                im.textures.size(), im.cached_payload_bytes >> 20,
+                REXCVAR_GET(p2_native_texture_cache_mb), im.cache_evictions);
     last = stats_;
     last_report_frame = frame;
   }
@@ -2315,6 +2352,11 @@ VkImageView TextureCache::GetViewUncached(const xenos::xe_gpu_texture_fetch_t& f
       total += rex::align(l.layer_bytes * l.slices, VkDeviceSize(16));
     }
 
+    if (REXCVAR_GET(p2_native_sync_color_lut) &&
+        IsSmallColorLut(is_3d,format==xenos::TextureFormat::k_8_8_8_8,width,height,layers,total)) {
+      force_upload_now=true;
+    }
+
     // New large textures are created and untiled by the streaming worker, so
     // an area coming into view does not freeze a frame on hundreds of image
     // allocations (each a kernel round trip). They appear a frame or two
@@ -2375,6 +2417,7 @@ VkImageView TextureCache::GetViewUncached(const xenos::xe_gpu_texture_fetch_t& f
       created->content_hash = texture_hash;
       created->level_count = level_count;
       created->layers = layers;
+      created->payload_bytes = total;
       created->last_used_frame = im.frame;
       created->stream = job;
       im.textures.emplace(key_hash, std::move(created));
@@ -2504,6 +2547,7 @@ VkImageView TextureCache::GetViewUncached(const xenos::xe_gpu_texture_fetch_t& f
     stats_.upload_bytes += total;
     im.CountUpload(key_hash, base_page << 12, uint32_t(format), width, height, total,
                    texture_hash);
+    target.payload_bytes = total;
     target.content_hash = texture_hash;
     target.key_hash = key_hash;
     if (!reuse_image) {

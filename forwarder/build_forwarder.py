@@ -60,6 +60,8 @@ def main():
     ap.add_argument("--keys", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--file-name")
+    ap.add_argument("--launcher", help="NRO started first with the game NRO as argv[1] and the title as argv[2] "
+                                         "(the settings screen, e.g. sdmc:/switch/rex-start.nro)")
     a = ap.parse_args()
 
     tid = int(a.tid, 16)
@@ -71,7 +73,11 @@ def main():
 
     program = nc.Nca(nc.CONTENT_PROGRAM, tid)
     program.add_pfs0([("main", nso), ("main.npdm", npdm)], nc.EXEFS_BLOCK)
-    program.add_romfs([("nextArgv", a.nro.encode()), ("nextNroPath", a.nro.encode())])
+    if a.launcher:
+        argv = f'{a.launcher} {a.nro} "{a.title}"'
+        program.add_romfs([("nextArgv", argv.encode()), ("nextNroPath", a.launcher.encode())])
+    else:
+        program.add_romfs([("nextArgv", a.nro.encode()), ("nextNroPath", a.nro.encode())])
     program = program.build(key)
 
     nacp = nc.make_nacp(tid, a.title, a.author, a.version)
@@ -90,7 +96,8 @@ def main():
     out = os.path.join(a.out, f"{a.file_name or a.title} [{tid:016X}][v0].nsp")
     with open(out, "wb") as f:
         f.write(nc.pfs0(files))
-    print(f"NSP: {out} ({os.path.getsize(out)} bytes), title id {tid:016X}, starts {a.nro}")
+    print(f"NSP: {out} ({os.path.getsize(out)} bytes), title id {tid:016X}, starts "
+          f"{a.launcher + ' -> ' if a.launcher else ''}{a.nro}")
 
 
 if __name__ == "__main__":

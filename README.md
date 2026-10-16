@@ -21,8 +21,8 @@ Ready builds (NROs, settings, HOME-menu NSP forwarders): see **Releases**.
 
 | | Prototype | Prototype 2 |
 |---|---|---|
-| Port | this project (fungalspores) | [penettrator](https://github.com/penettrator/prototype2-nx), built from his sources with our fixes |
-| Picture | native 1280x720 | 960x544 + FSR 1 (the original release: 640x352) |
+| Port | this project (fungalspores) | [penettrator](https://github.com/penettrator/prototype2-nx) 0.2.0, built from his sources with our fixes |
+| Picture | 1280x720, adjustable | 960x544 + FSR 1 (the original release: 800x448) |
 | FPS* | menus and cutscenes 30-60, gameplay 25-30 | city 25-30 |
 | Sound | yes | yes |
 | Saves | yes (fixed) | yes |
@@ -44,7 +44,9 @@ on the SD card. FAT32 is fine.
    - Prototype 2 → `sdmc:/switch/prototype2-nx/game_root/` (with `default.xex` inside)
 
    From an ISO: `extract-xiso -x "Prototype.iso" -d game`. `$SystemUpdate` is not needed.
-3. Install both NSPs from `nsp/` with DBI and start the games from the HOME menu.
+3. Install both NSPs from `nsp/` with DBI and start the games from the HOME menu. They start through
+   `rex-start.nro`: it shows the game for five seconds, and **+** opens its settings (resolution, textures,
+   language and so on) written straight into the game's TOML.
    Without an NSP: hold **R** while starting any installed game and pick the port in the Homebrew menu.
    **Not from the Album:** applet mode does not have enough memory.
 
@@ -75,6 +77,14 @@ Prototype 2 picture (ours / the original release):
 Prototype 2 runs on all four CPU cores and heats the console more than the first game. With Horizon OC / sys-clk,
 give it (`0150524F54320000`) its own clock profile. Do not use high overclocks on an Erista (original) console.
 
+## Settings screen (`rex-start/`)
+
+A small homebrew between the HOME icon and the port, after
+[winenx-start](https://github.com/fungalspores/winenx-start): libnx framebuffer, the console's own font through
+FreeType, no SDL. It offers only keys already present in the game's TOML and copies every other line through
+untouched (quotes and line endings included); the height follows the width it is paired with. Press nothing and
+the game starts as before.
+
 ## What we fixed
 
 **Prototype** (port from scratch, ReXGlue + the masseffect-nx Horizon SDK + the Prototype 2 NX native renderer):
@@ -85,6 +95,13 @@ give it (`0150524F54320000`) its own clock profile. Do not use high overclocks o
 - "Corrupted" saves: the game writes the save file's size into its first word and checks it on load; the SDK
   returned the size cached when the file was opened (0). Fixed in `XFile::Write` / `SetLength`.
 - Console signature stubs (`XeKeysConsolePrivateKeySign` / `...SignatureVerification`) returned "invalid".
+- Profile-guided optimization with our own profile: an instrumented build writes `/pgo-proto` on the SD card
+  (`src/proto_pgo.cpp`, `-DPROTO_PGO=GEN`), a play session leaves the counters, and the release is built with
+  `-DPROTO_PGO=USE -DPROTO_PGO_DATA=<dir>`.
+- Adjustable internal render size: the game hard-codes a 1280x720 back buffer in `sub_82A0E118`;
+  `tools/prepare_proto_codegen.py` routes it to `proto_render_width` / `proto_render_height`.
+- The renderer updated to the one from Prototype 2 0.2.0 (texture cache with eviction, batched occlusion
+  queries, materials no longer disappear after leaving the map open).
 - Per-address locks instead of one process-wide mutex for the game's lwarx/stwcx. regions; guest memory
   accesses without `volatile` (from Prototype 2 NX); audio, 30-60 FPS menus with the native renderer.
 
@@ -111,12 +128,15 @@ works the same way. Outline:
 3. **Mesa/NVK**: [mesa-switch](https://github.com/danfromtico/mesa-switch) at `d4a00ea0ab3` + `patches/mesa-switch.patch`,
    then `tools/proot/mesa_p2_build.sh` (needs meson >= 1.7, Rust nightly + rust-src + rustfmt, a dynamically linked
    bindgen 0.73+, mesa_clc/vtn_bindgen2 from a native Mesa build).
-4. **Prototype**: `prototype/build.sh` (codegen ~1-2 min, NRO ~10-35 min).
+4. **Prototype**: `prototype/build.sh` (codegen ~1-2 min, NRO ~10-35 min). PGO: build once with
+   `-DPROTO_PGO=GEN`, play 10-15 minutes, copy `sdmc:/pgo-proto` off the console and build again with
+   `-DPROTO_PGO=USE -DPROTO_PGO_DATA=<that folder>` **from the same build directory**.
 5. **Prototype 2**: as in penettrator's `docs/BUILD.en.md`: codegen of `project/prototype2_manifest.toml`, then
    `tools/prepare_switch_codegen.py`, `prepare_no_volatile.py`, `prepare_switch_hot.py` and
    `cmake -S switch -B build/switch ... -DP2_DIRECT_CALLS=ON -DP2_GUEST_LTO=ON -DP2_LEAF_LOCALS=ON -DP2_ARM_VMX=ON`
    (~25 min with LTO).
-6. **NSP forwarders**: `forwarder/build_forwarder.py --nro sdmc:/switch/prototype-nx/prototype.nro --icon art/icon_prototype.jpg --title Prototype --author fungalspores --version 1.0.0 --tid 0150524F54310000 --keys <your prod.keys> --out out/`
+6. **Settings screen**: `rex-start/build.sh` (devkitA64 + FreeType from the portlibs).
+7. **NSP forwarders**: `forwarder/build_forwarder.py --launcher sdmc:/switch/rex-start.nro --nro sdmc:/switch/prototype-nx/prototype.nro --icon art/icon_prototype.jpg --title Prototype --author fungalspores --version 1.0.0 --tid 0150524F54310000 --keys <your prod.keys> --out out/`
    (needs [Forwarder-Mod](https://github.com/Skywalker25/Forwarder-Mod) `9853bd9` cloned to `forwarder/loader`).
    Your own `prod.keys` only; never publish them.
 

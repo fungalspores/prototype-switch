@@ -3,7 +3,7 @@
 # separate host step (tools/codegen.ps1) because a cross-built rexglue cannot run here.
 # Scheme follows Mercenaries2-NX app/CMakeLists.txt (see X360_TO_SWITCH_PORTING_GUIDE.md stage 4).
 cmake_minimum_required(VERSION 3.25)
-project(prototype2 VERSION 0.1.0 LANGUAGES C CXX)
+project(prototype2 VERSION 0.2.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(P2_PROJECT "${CMAKE_CURRENT_SOURCE_DIR}/../project")
@@ -69,7 +69,7 @@ set_source_files_properties("${P2_PROJECT}/generated/default/prototype2_register
 foreach(t prototype2 prototype2_recomp)
     target_compile_options(${t} PRIVATE -ffp-contract=off -fno-strict-aliasing)
 endforeach()
-rexglue_switch_add_nro(prototype2 NAME "Prototype 2" AUTHOR "penettrator, fungalspores" VERSION "1.0.0" ICON "${CMAKE_CURRENT_SOURCE_DIR}/../extras/icon_fs.jpg")
+rexglue_switch_add_nro(prototype2 NAME "Prototype 2" AUTHOR "penettrator, fungalspores" VERSION "1.1.0" ICON "${CMAKE_CURRENT_SOURCE_DIR}/../extras/icon_fs.jpg")
 
 option(P2_GUEST_STACK_AUDIT "Instrument generated function returns (diagnostic overhead)" OFF)
 foreach(t prototype2 prototype2_recomp)
@@ -112,3 +112,26 @@ if(P2_LEAF_LOCALS AND P2_GUEST_STACK_AUDIT)
 endif()
 # Diagnostic wrappers preserve all original NVK/WSI/libnx arguments and returns.
 target_link_options(prototype2 PRIVATE "LINKER:--wrap=bqQueueBuffer")
+
+# WORKLOG #126: profile-guided optimization of the generated guest code (prototype2_recomp only).
+# GEN: instrumented build, the game writes /pgo/*.gcda on the SD card (switch_pgo.cpp); USE: optimized with them.
+# Both stages must use the same build directory layout (-fprofile-prefix-path strips it from the file names).
+set(P2_PGO "OFF" CACHE STRING "Application and guest code PGO stage: OFF, GEN or USE")
+set(P2_PGO_DATA "${CMAKE_CURRENT_SOURCE_DIR}/../config/pgo-data" CACHE STRING "Directory with the .gcda files for P2_PGO=USE")
+if(P2_PGO STREQUAL "GEN")
+    # run97: the indirect-call value profiler uses a thread-local libgcov variable, null on guest threads (crash at
+    # start): arc counts only.
+    target_compile_options(prototype2_recomp PRIVATE -fprofile-generate=/pgo -fno-profile-values -fprofile-update=single
+      "-fprofile-prefix-path=${CMAKE_BINARY_DIR}")
+    target_link_options(prototype2 PRIVATE -fprofile-generate=/pgo)
+    target_compile_definitions(prototype2 PRIVATE P2_PGO_GEN=1)
+    # WORKLOG #127: the port's own code too (native renderer, skinning, culling: ring and sim thread work).
+    target_compile_options(prototype2 PRIVATE -fprofile-generate=/pgo -fno-profile-values -fprofile-update=single
+      "-fprofile-prefix-path=${CMAKE_BINARY_DIR}")
+elseif(P2_PGO STREQUAL "USE")
+    target_compile_options(prototype2_recomp PRIVATE "-fprofile-use=${P2_PGO_DATA}" -fprofile-partial-training -fprofile-correction
+      "-fprofile-prefix-path=${CMAKE_BINARY_DIR}" -Wno-missing-profile -Wno-coverage-mismatch)
+    target_link_options(prototype2 PRIVATE "-fprofile-use=${P2_PGO_DATA}" -fprofile-partial-training)
+    target_compile_options(prototype2 PRIVATE "-fprofile-use=${P2_PGO_DATA}" -fprofile-partial-training
+      -fprofile-correction "-fprofile-prefix-path=${CMAKE_BINARY_DIR}" -Wno-missing-profile -Wno-coverage-mismatch)
+endif()

@@ -2,7 +2,7 @@
 # 39-bit full-application NSP forwarder (HOME menu icon) for sdmc:/switch/Prototype2/prototype2.nro.
 # Adapted from reference/masseffect-nx/tools/build_nsp.sh (Forwarder-Mod + hacBrewPack, pinned commits).
 # Usage: SWITCH_PROD_KEYS=/path/prod.keys tools/build_forwarder.sh <release.nro> <output-dir>
-# The icon and version 0.1.0 NACP are taken from the release NRO.
+# The icon and version 0.2.0 NACP are taken from the release NRO.
 set -euo pipefail
 NRO="$1"; OUT="$2"
 KEYS="${SWITCH_PROD_KEYS:?set SWITCH_PROD_KEYS to your own prod.keys}"
@@ -91,10 +91,15 @@ for label, off_pos, k_off, k_len in (("ACI0", 0x70, 0x30, 0x34), ("ACID", 0x78, 
     assert len(flags) == 1
     lo, hi = (flags[0] >> 16) & 255, (flags[0] >> 24) & 255
     assert (lo, hi) == (0, 3), (label, lo, hi)
-    checks[label] = {"lowest_cpu_id": lo, "highest_cpu_id": hi}
+    priorities = sorted(((flags[0] >> 4) & 63, (flags[0] >> 10) & 63))
+    assert priorities[0] <= 59 <= priorities[1], "FPS thread priority59 outside NPDM permission range"
+    checks[label] = {"lowest_cpu_id": lo, "highest_cpu_id": hi, "priority_range": priorities}
+for src, dst in (("control/control.nacp", "control.nacp"), ("exefs/main.npdm", "main.npdm"),
+                 ("control/icon_AmericanEnglish.dat", "embedded-icon.jpg")):
+    pathlib.Path("/output", dst).write_bytes(pathlib.Path(src).read_bytes())
 nacp = pathlib.Path("control/control.nacp").read_bytes()
 version = nacp[0x3060:0x3070].split(bytes([0]))[0].decode()
-assert version == "0.1.0"
+assert version == "0.2.0"
 checks.update(version=version, title_id=__import__("os").environ["TITLE_ID"], address_space_type=3,
               nro_path=__import__("os").environ["NRO_SD_PATH"])
 pathlib.Path("/output/forwarder-validation.json").write_text(json.dumps(checks, indent=2)+"\n")

@@ -27,6 +27,9 @@ p2_native_max_anisotropy = 1
 p2_native_texture_lod_bias = 1.0
 p2_native_async_present = false
 present_effect = "fsr"
+# Internal render size (1280x720 = the game's own), scaled to the screen with present_effect.
+proto_render_width = 1280
+proto_render_height = 720
 # Prototype 2 specific skips are off: they were matched to its passes, not to Prototype 1's.
 p2_native_skip_depth_prepass = false
 p2_native_reflection_half_rate = false

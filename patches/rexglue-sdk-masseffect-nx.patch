@@ -73762,15 +73762,18 @@ index 3f41047..dbf6c67 100644
    RexSwitchPerfCount(9);
    RexSwitchPerfAdd(10, uint64_t(resolve_info.coordinate_info.width_div_8) * 8 *
 diff --git a/sdk/src/input/switch/switch_input_driver.cpp b/sdk/src/input/switch/switch_input_driver.cpp
-index f500080..926a65f 100644
+index f500080..89cb06e 100644
 --- a/sdk/src/input/switch/switch_input_driver.cpp
 +++ b/sdk/src/input/switch/switch_input_driver.cpp
-@@ -41,6 +41,12 @@ REXCVAR_DEFINE_STRING(input_record, "", "Input",
+@@ -41,6 +41,15 @@ REXCVAR_DEFINE_STRING(input_record, "", "Input",
  REXCVAR_DEFINE_STRING(input_play, "", "Input",
                        "Play this recorded file (input_record) back as pad 1, starting at the next MINUS press");
  
 +// Release builds ship with this off: players press L+R with the D-pad in normal play and would open the
 +// debug overlay, console, settings, A/B lap or screenshot by accident (see DispatchMenuShortcuts).
++REXCVAR_DEFINE_BOOL(input_screenshot_shortcut, true, "Input",
++                    "Allow L+R+ZR screenshots independently of debug menu shortcuts");
++
 +REXCVAR_DEFINE_BOOL(input_menu_shortcuts, false, "Input",
 +                    "L+R combinations open the debug overlay, settings, console, achievements, GPU A/B lap "
 +                    "and screenshot. false = off (release)");
@@ -73778,7 +73781,7 @@ index f500080..926a65f 100644
  namespace rex::ui {
  // rex/ui/overlay/debug_overlay.h (not included here because it pulls in ImGui).
  bool DebugOverlayOpen();
-@@ -457,6 +463,8 @@ void SwitchInputDriver::Poll(size_t index) {
+@@ -457,6 +466,8 @@ void SwitchInputDriver::Poll(size_t index) {
  }
  
  
@@ -73787,29 +73790,19 @@ index f500080..926a65f 100644
  /* From the profiler (switch_perf.cpp): turns the GPU A/B test lap on and off. */
  extern "C" void RexSwitchPerfToggleAb(void);
  /*
-@@ -479,6 +487,10 @@ extern "C" void RexSwitchPerfToggleAb(void);
+@@ -479,11 +490,30 @@ extern "C" void RexSwitchPerfToggleAb(void);
   * slot.menu_shortcuts with the state from the previous poll.
   */
  void SwitchInputDriver::DispatchMenuShortcuts(Slot& slot, uint64_t held) {
-+  if (!REXCVAR_GET(input_menu_shortcuts)) {
-+    slot.menu_shortcuts = 0;
-+    return;
-+  }
-   struct Shortcut {
-     uint64_t button;
-     rex::ui::VirtualKey keystroke;
-@@ -531,6 +543,21 @@ void SwitchInputDriver::DispatchMenuShortcuts(Slot& slot, uint64_t held) {
-   }
-   slot.menu_shortcuts = ab_now ? (slot.menu_shortcuts | kBitAb)
-                                  : (slot.menu_shortcuts & ~kBitAb);
-+
++  constexpr uint64_t kModifier = HidNpadButton_L | HidNpadButton_R;
++  const bool modifier = (held & kModifier) == kModifier;
 +  /*
 +   * L+R+ZR asks the app for a screenshot (RexSwitchScreenshotRequest, weak: titles
 +   * without it ignore the combo). Called on this thread: an app thread of its own
 +   * failed to start (the process is at its thread limit).
 +   */
 +  const uint64_t kBitShot = uint64_t(1) << 9;
-+  const bool shot_now = modifier && (held & HidNpadButton_ZR) != 0;
++  const bool shot_now = REXCVAR_GET(input_screenshot_shortcut) && modifier && (held & HidNpadButton_ZR) != 0;
 +  const bool shot_before = (slot.menu_shortcuts & kBitShot) != 0;
 +  if (shot_now && !shot_before && RexSwitchScreenshotRequest) {
 +    RexSwitchScreenshotRequest();
@@ -73817,6 +73810,32 @@ index f500080..926a65f 100644
 +  }
 +  slot.menu_shortcuts = shot_now ? (slot.menu_shortcuts | kBitShot)
 +                                 : (slot.menu_shortcuts & ~kBitShot);
++  if (!REXCVAR_GET(input_menu_shortcuts)) {
++    slot.menu_shortcuts &= uint64_t(1) << 9;
++    return;
++  }
+   struct Shortcut {
+     uint64_t button;
+     rex::ui::VirtualKey keystroke;
+   };
+-  constexpr uint64_t kModifier = HidNpadButton_L | HidNpadButton_R;
+   static const Shortcut kShortcuts[] = {
+       {HidNpadButton_Up, rex::ui::VirtualKey::kF3},
+       {HidNpadButton_Right, rex::ui::VirtualKey::kF4},
+@@ -491,7 +521,6 @@ void SwitchInputDriver::DispatchMenuShortcuts(Slot& slot, uint64_t held) {
+       {HidNpadButton_Left, rex::ui::VirtualKey::kF7},
+   };
+ 
+-  const bool modifier = (held & kModifier) == kModifier;
+   for (size_t i = 0; i < std::size(kShortcuts); ++i) {
+     const uint64_t bit = uint64_t(1) << i;
+     const bool now = modifier && (held & kShortcuts[i].button) != 0;
+@@ -531,6 +560,8 @@ void SwitchInputDriver::DispatchMenuShortcuts(Slot& slot, uint64_t held) {
+   }
+   slot.menu_shortcuts = ab_now ? (slot.menu_shortcuts | kBitAb)
+                                  : (slot.menu_shortcuts & ~kBitAb);
++
++
  }
  
  SwitchInputDriver::Slot* SwitchInputDriver::FindSlot(DeviceId id) {
@@ -74550,6 +74569,46 @@ index 33e668a..bbc064d 100644
    for (;;) {
      {
        std::unique_lock<std::mutex> lock(paint_thread_mutex_);
+diff --git a/sdk/src/ui/rex_app.cpp b/sdk/src/ui/rex_app.cpp
+index 042bd7e..b823da0 100644
+--- a/sdk/src/ui/rex_app.cpp
++++ b/sdk/src/ui/rex_app.cpp
+@@ -68,6 +68,16 @@ REXCVAR_DEFINE_STRING(gpu_plugin, "", "GPU",
+                       "GPU emulation")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+ 
++#if REX_PLATFORM_SWITCH
++REXCVAR_DEFINE_BOOL(achievement_notifications, false, "UI",
++                    "Show achievement popups (requires restart)")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++#else
++REXCVAR_DEFINE_BOOL(achievement_notifications, true, "UI",
++                    "Show achievement popups (requires restart)")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++#endif
++
+ namespace rex {
+ 
+ // --- ReXApp ---
+@@ -87,7 +97,7 @@ std::unique_ptr<ui::ImGuiDialog> ReXApp::CreateAchievementsOverlay() {
+ }
+ 
+ std::unique_ptr<ui::AchievementNotificationDialog> ReXApp::CreateAchievementNotificationDialog() {
+-  if (!imgui_drawer_ || !immediate_drawer_ || !runtime_) {
++  if (!REXCVAR_GET(achievement_notifications) || !imgui_drawer_ || !immediate_drawer_ || !runtime_) {
+     return nullptr;
+   }
+   return std::make_unique<ui::AchievementToastDialog>(imgui_drawer_.get(), immediate_drawer_.get(),
+@@ -481,7 +491,8 @@ void ReXApp::LaunchModule() {
+      * session. By creating it only when the first event arrives, the game presents every frame it
+      * renders.
+      */
+-    if (achievement_notification_listener_ == 0 && runtime_ && runtime_->kernel_state()) {
++    if (REXCVAR_GET(achievement_notifications) && achievement_notification_listener_ == 0 &&
++        runtime_ && runtime_->kernel_state()) {
+       achievement_notification_listener_ = achievements().RegisterNotificationCallback(
+           [this](const rex::system::AchievementEvent& event) {
+             rex::system::AchievementEvent copy = event;
 diff --git a/sdk/src/ui/runtime_switch.cpp b/sdk/src/ui/runtime_switch.cpp
 index 51e5e82..e8e01d1 100644
 --- a/sdk/src/ui/runtime_switch.cpp

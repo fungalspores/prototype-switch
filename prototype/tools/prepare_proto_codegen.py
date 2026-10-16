@@ -80,3 +80,31 @@ if marker not in text:
     text = text[:a] + new + text[b:]
     pch.write_text(text, encoding='utf-8', newline='\n')
 print(f'msr regions: {entries} per-address locks ({moved} moved now)')
+
+# 2. Internal render size. sub_82A0E118 builds the D3D device parameters from XGetVideoMode: widescreen -> a
+#    hard-coded 1280x720 back buffer (else 640x480). The engine sizes its scene targets from it; the presenter
+#    scales the smaller front buffer to the screen (FSR). The size comes from proto_render_width/_height
+#    (src/proto_quality.cpp, default 1280x720 = unchanged).
+import re as _re
+_rs = 'sub_82A0E118'
+for f in files:
+    src = Path(f).read_text(encoding='utf-8', errors='replace')
+    head = 'DEFINE_REX_FUNC(' + _rs + ') {'
+    if head not in src:
+        continue
+    if 'proto_render_width()' not in src:
+        b = src.index(head)
+        e = src.find('\nDEFINE_REX_FUNC(', b + 1)
+        e = len(src) if e < 0 else e
+        body = src[b:e]
+        if body.count('\tctx.r11.s64 = 1280;\n') != 1 or body.count('\tctx.r10.s64 = 720;\n') != 1:
+            sys.exit('render size constants not found exactly once in ' + _rs)
+        body = body.replace('\tctx.r11.s64 = 1280;\n', '\tctx.r11.s64 = proto_render_width();\n')
+        body = body.replace('\tctx.r10.s64 = 720;\n', '\tctx.r10.s64 = proto_render_height();\n')
+        decl = 'extern "C" int64_t proto_render_width();\nextern "C" int64_t proto_render_height();\n'
+        src = src[:b] + decl + body + src[e:]
+        Path(f).write_text(src, encoding='utf-8', newline='\n')
+        print('render size hook inserted in', Path(f).name)
+    else:
+        print('render size hook already present')
+    break

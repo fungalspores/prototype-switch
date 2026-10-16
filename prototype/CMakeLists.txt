@@ -67,3 +67,24 @@ foreach(t prototype prototype_recomp)
 endforeach()
 rexglue_switch_add_nro(prototype NAME "Prototype" AUTHOR "fungalspores" VERSION "1.0.0" ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.jpg")
 target_link_options(prototype PRIVATE "LINKER:--wrap=bqQueueBuffer")
+
+# Profile-guided optimization (after Prototype 2 NX switch/CMakeLists.txt, WORKLOG #126/#127).
+# GEN: instrumented build, the game writes /pgo-proto/*.gcda on the SD card (src/proto_pgo.cpp); USE: optimized
+# with them. Both stages must use the same build directory (-fprofile-prefix-path strips it from the file names).
+set(PROTO_PGO "OFF" CACHE STRING "PGO stage: OFF, GEN or USE")
+set(PROTO_PGO_DATA "${CMAKE_CURRENT_SOURCE_DIR}/pgo-data" CACHE STRING "Directory with the .gcda files for PROTO_PGO=USE")
+if(PROTO_PGO STREQUAL "GEN")
+    # Indirect-call value profiling uses a thread-local libgcov variable that is null on guest threads: arcs only.
+    foreach(t prototype_recomp prototype)
+        target_compile_options(${t} PRIVATE -fprofile-generate=/pgo-proto -fno-profile-values -fprofile-update=single
+          "-fprofile-prefix-path=${CMAKE_BINARY_DIR}")
+    endforeach()
+    target_link_options(prototype PRIVATE -fprofile-generate=/pgo-proto)
+    target_compile_definitions(prototype PRIVATE PROTO_PGO_GEN=1)
+elseif(PROTO_PGO STREQUAL "USE")
+    foreach(t prototype_recomp prototype)
+        target_compile_options(${t} PRIVATE "-fprofile-use=${PROTO_PGO_DATA}" -fprofile-partial-training -fprofile-correction
+          "-fprofile-prefix-path=${CMAKE_BINARY_DIR}" -Wno-missing-profile -Wno-coverage-mismatch)
+    endforeach()
+    target_link_options(prototype PRIVATE "-fprofile-use=${PROTO_PGO_DATA}" -fprofile-partial-training)
+endif()

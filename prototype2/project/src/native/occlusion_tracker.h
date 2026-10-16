@@ -34,17 +34,24 @@ template <std::size_t N> class OcclusionTracker {
   bool BeginOverlapping(uint32_t address) {
     if(open_.count==max_active || FindBegin(address)!=invalid)return false;
     for(uint32_t i=0;i<N;++i){uint32_t id=(cursor_+i)%N;if(records_[id].valid)continue;
+      for(auto& old:records_)if(old.valid && old.begin_address==address)old.superseded=true;
       records_[id]={address,0,0,true,false,false,++issued_,address};open_.ids[open_.count++]=id;active_=id;cursor_=(id+1)%N;++used_;return true;}
     return false;
+  }
+  Owners OpenOwners() const {
+    Owners owners;
+    for(uint32_t i=0;i<open_.count;++i) {
+      const uint32_t id=open_.ids[i];
+      if(!records_[id].fallback)owners.ids[owners.count++]=id;
+    }
+    return owners;
   }
   Owners AddOpenPiece() {
     Owners owners;
     for(uint32_t i=0;i<open_.count;++i){
       const uint32_t id=open_.ids[i];auto& record=records_[id];
-      // Bound long statistics intervals; leave room for later short visibility queries.
       if(record.fallback)continue;
-      if(record.draws>=64){record.fallback=true;continue;}
-      ++record.draws;AddPiece(id);owners.ids[owners.count++]=id;
+      AddPiece(id);owners.ids[owners.count++]=id;
     }
     return owners;
   }
@@ -76,12 +83,12 @@ template <std::size_t N> class OcclusionTracker {
   uint32_t CancelActive(){if(active_==invalid)return invalid;FailActive();return End(records_[active_].address);}
   bool TakeReady(uint32_t id,Result& result){
     if(id>=N)return false;auto& r=records_[id];if(!r.valid || !r.ended || r.pieces)return false;
-    bool superseded=false;
+    bool superseded=r.superseded;
     for(const auto& other:records_)if(other.valid && other.serial>r.serial && (other.ended?other.address:other.begin_address-32u)==r.address){superseded=true;break;}
     result={r.address,r.samples,r.fallback,superseded};r.valid=false;--used_;return true;
   }
  private:
-  struct Record {uint32_t address=0,samples=0,pieces=0;bool valid=false,ended=false,fallback=false;uint64_t serial=0;uint32_t begin_address=0,draws=0;};
+  struct Record {uint32_t address=0,samples=0,pieces=0;bool valid=false,ended=false,fallback=false;uint64_t serial=0;uint32_t begin_address=0;bool superseded=false;};
   std::array<Record,N> records_{};uint32_t active_=invalid,cursor_=0,used_=0;uint64_t issued_=0;Owners open_{};
 };
 }

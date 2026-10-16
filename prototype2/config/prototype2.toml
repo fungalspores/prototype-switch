@@ -1,4 +1,4 @@
-# Prototype 2 / Nintendo Switch — version 0.1.0
+# Prototype 2 / Nintendo Switch — fspores build 1.1.0 (penettrator 0.2.0)
 # fspores build: balanced picture (960x544 + FSR, sharper textures, more detail; crowds as original).
 # Original penettrator values: 640x352, lod_bias 1.0, anisotropy 1, geo_lod 4.0, shadows 0.3, peds 0.3, cars 0.15.
 render_target_path_vulkan = "fsi"
@@ -97,3 +97,9 @@ p2_native_trace_vs = ""
 p2_native_trace_ps = ""
 p2_skin_cache = true
 p2_native_skin_unique = true
+p2_skin_trace_frames = 0
+p2_skin_half_rate = false
+achievement_notifications = false
+input_screenshot_shortcut = true
+p2_native_texture_cache_mb = 128
+p2_native_sync_color_lut = true

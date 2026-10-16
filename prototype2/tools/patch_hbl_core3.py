@@ -1,4 +1,4 @@
-"""Prototype 2 package 0.1.0: patch ONLY the verified hbloader binary."""
+"""Prototype 2 package 0.2.0: patch ONLY the verified hbloader binary."""
 from pathlib import Path
 import argparse,hashlib
 ap=argparse.ArgumentParser();ap.add_argument('input',type=Path);ap.add_argument('output',type=Path);a=ap.parse_args()

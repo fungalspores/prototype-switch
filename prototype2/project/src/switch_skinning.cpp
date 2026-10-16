@@ -8,6 +8,7 @@
 #include <vector>
 #include <cstring>
 #include <atomic>
+#include <mutex>
 
 REXCVAR_DEFINE_BOOL(p2_skinning_local, false, "Prototype2", "Exact skinning specialization with local registers (rollback: false)");
 REXCVAR_DEFINE_UINT32(p2_skinning_verify_calls, 32, "Prototype2", "Differential checks against original skinning; compares output, AABB, stack and registers");
@@ -19,6 +20,7 @@ REX_EXTERN(__imp__sub_829F5978);
 #include "p2_skin_cache.h"
 #include <rex/logging.h>
 #include "native/skin_write_log.h"
+#include <rex/thread.h>
 
 REXCVAR_DEFINE_BOOL(p2_skinning_fast, true, "Prototype2",
     "Per-vertex rewrite of the skinning routine (p2_skinning_fast.h, same operations, memory byte-identical); "
@@ -74,6 +76,12 @@ bool Overlaps(uint32_t a, uint64_t n, uint32_t b, uint64_t m) {
 REXCVAR_DEFINE_BOOL(p2_skin_cache, true, "Prototype2",
     "Approximate skinning: an identical call (same input, palette contents, vertex count) replays the bytes the "
     "previous one wrote instead of computing them (WORKLOG #116; false = always compute)");
+REXCVAR_DEFINE_BOOL(p2_skin_scan_cache, true, "Prototype2",
+    "Skinning: the input scan (finite check, largest bone index) is reused for input bytes already scanned "
+    "(WORKLOG #122; false = scan every call)");
+REXCVAR_DEFINE_BOOL(p2_skin_half_rate, false, "Prototype2",
+    "Crowd characters (models shared by several bone palettes) are skinned every other call; the calls between "
+    "write back the previous result (WORKLOG #125)");
 REXCVAR_DEFINE_BOOL(p2_skin_dup_stats, false, "Prototype2",
     "Log how many skinning calls repeat an identical earlier call (same frame / previous frame)");
 namespace dupstats {
@@ -113,6 +121,43 @@ static void DupStats(uint8_t* base, uint32_t input, uint32_t n, uint32_t palette
                 dupstats::g_prev_frame_v.load());
 }
 
+// WORKLOG #124 diagnostic: every skinning call of a few consecutive renderer frames (identity of meshes and
+// palettes across frames, for animating small/far characters at half rate).
+REXCVAR_DEFINE_UINT32(p2_skin_trace_frames, 0, "Prototype2",
+    "Log every skinning call of this many consecutive frames, starting at renderer frame 4000 (0 = off)");
+namespace skintrace {
+struct Call { uint32_t frame, input, n, palette, out, lr, thread; float t[4]; };
+inline std::mutex g_mutex;
+inline std::vector<Call> g_calls;
+inline std::atomic<bool> g_dumped{false};
+}
+static void SkinTrace(uint8_t* base, uint32_t input, uint32_t n, uint32_t palette, uint32_t out, uint32_t lr) {
+  const uint32_t frames = REXCVAR_GET(p2_skin_trace_frames);
+  if (!frames || skintrace::g_dumped.load(std::memory_order_relaxed)) return;
+  const uint32_t frame = p2::skinlog::g_frame.load(std::memory_order_relaxed);
+  constexpr uint32_t kStart = 4000;
+  if (frame < kStart) return;
+  std::lock_guard<std::mutex> lock(skintrace::g_mutex);
+  if (frame >= kStart + frames) {
+    if (skintrace::g_dumped.exchange(true)) return;
+    REXLOG_INFO("[p2-skin-trace] {} calls in frames {}..{}: frame input n palette out lr thread bone0-row3",
+                skintrace::g_calls.size(), kStart, kStart + frames - 1);
+    for (const auto& c : skintrace::g_calls)
+      REXLOG_INFO("[p2-skin-trace] {} {:08X} {} {:08X} {:08X} {:08X} {} {:.2f} {:.2f} {:.2f} {:.2f}", c.frame, c.input,
+                  c.n, c.palette, c.out, c.lr, c.thread, c.t[0], c.t[1], c.t[2], c.t[3]);
+    skintrace::g_calls.clear();
+    return;
+  }
+  skintrace::Call c{frame, input, n, palette, out, lr, uint32_t(rex::thread::current_thread_id()), {}};
+  for (int i = 0; i < 4; ++i) {
+    uint32_t w;
+    std::memcpy(&w, base + (palette & ~15u) + 48 + 4 * i, 4);
+    w = __builtin_bswap32(w);
+    std::memcpy(&c.t[i], &w, 4);
+  }
+  if (skintrace::g_calls.size() < 20000) skintrace::g_calls.push_back(c);
+}
+
 static REX_FUNC(P2SkinningDispatch) {
   if (!REXCVAR_GET(p2_skinning_local) || failed.load(std::memory_order_relaxed)) {
     __imp__sub_829F5978(ctx, base); return;
@@ -134,7 +179,10 @@ static REX_FUNC(P2SkinningDispatch) {
   // One pass over the input: finite positions (the generated kernels' validated domain) and the largest bone
   // index (the rewrite's palette rows). run59: the two separate scans were 4 % of a core.
   uint32_t max_index = 0;
-  {
+  // WORKLOG #122: the input's hash (also the cache key's first half) finds an earlier scan of the same bytes.
+  const bool use_scan_cache = REXCVAR_GET(p2_skin_scan_cache);
+  const uint64_t input_hash = use_scan_cache ? p2skincache::InputHash(base, input, n) : 0;
+  if (!use_scan_cache || !p2skincache::ScanLookup(input_hash, input, &max_index)) {
     bool finite = true;
     const uint8_t* v = base + input;
     for (uint32_t i = 0; i < n; ++i, v += 32) {
@@ -152,8 +200,10 @@ static REX_FUNC(P2SkinningDispatch) {
     if (!finite) {
       __imp__sub_829F5978(ctx, base); return;
     }
+    if (use_scan_cache) p2skincache::ScanStore(input_hash, input, max_index);
   }
   if (REXCVAR_GET(p2_skin_dup_stats)) DupStats(base, input, n, ctx.r6.u32, max_index);
+  SkinTrace(base, input, n, ctx.r6.u32, out, uint32_t(ctx.lr));
   if (REXCVAR_GET(p2_skinning_fast) && !fast_failed.load(std::memory_order_relaxed)) {
     // The rewrite reads the palette per vertex and writes each vertex at once; the original read a vertex's
     // matrices before writing the previous vertex. Same result unless the output overlaps the palette.
@@ -162,28 +212,54 @@ static REX_FUNC(P2SkinningDispatch) {
       const bool approx = REXCVAR_GET(p2_skinning_approx);
       if (approx) {
         ctx.fpscr.enableFlushMode();
-        if (REXCVAR_GET(p2_skin_cache) && p2skincache::Cacheable(n)) {
-          // WORKLOG #116: identical calls (same input bytes, palette bytes and n) replay the bytes written last time.
-          const uint64_t key = p2skincache::Key(base, input, n, palette, max_index);
+        const uint32_t bbox_addr = ctx.r7.u32;
+        auto replayed = [&] {
+          p2skincache::StackWords(base, bbox_addr, ctx.r1.u32, uint32_t(ctx.lr), p2skin::kBig);
+        };
+        // 1. Identical inputs as a recent call: the bytes it wrote (exact).
+        uint64_t key = 0;
+        const bool cache = REXCVAR_GET(p2_skin_cache) && p2skincache::Cacheable(n);
+        if (cache) {
+          key = p2skincache::Key(
+              base, use_scan_cache ? input_hash : p2skincache::InputHash(base, input, n), palette, max_index);
           const uint64_t calls = p2skincache::g_calls.fetch_add(1, std::memory_order_relaxed) + 1;
           p2skincache::g_vertices.fetch_add(n, std::memory_order_relaxed);
           if (calls % 200000 == 0)
-            REXLOG_INFO("[p2-skin-cache] {} calls / {} vertices: {} hits / {} vertices replayed, {} stores",
+            REXLOG_INFO("[p2-skin-cache] {} calls / {} vertices: {} hits / {} vertices replayed, {} stores; half rate: "
+                        "{} of {} crowd calls / {} vertices replayed",
                         calls, p2skincache::g_vertices.load(), p2skincache::g_hits.load(),
-                        p2skincache::g_hit_vertices.load(), p2skincache::g_stores.load());
-          if (p2skincache::Replay(base, key, n, out, ctx.r7.u32)) {
-            p2skincache::StackWords(base, ctx.r7.u32, ctx.r1.u32, uint32_t(ctx.lr), p2skin::kBig);
+                        p2skincache::g_hit_vertices.load(), p2skincache::g_stores.load(),
+                        p2halfrate::g_replayed.load(), p2halfrate::g_calls.load(),
+                        p2halfrate::g_replayed_vertices.load());
+          if (p2skincache::Replay(base, key, n, out, bbox_addr)) {
+            replayed();
             p2skincache::g_hits.fetch_add(1, std::memory_order_relaxed);
             p2skincache::g_hit_vertices.fetch_add(n, std::memory_order_relaxed);
             return;
           }
-          p2skin::Skin(base, out, input, n, palette, ctx.r7.u32, ctx.r1.u32, uint32_t(ctx.lr), max_index,
-                       ParallelRunner(), true);
-          p2skincache::Store(base, key, n, out, ctx.r7.u32);
-          return;
         }
-        p2skin::Skin(base, out, input, n, palette, ctx.r7.u32, ctx.r1.u32, uint32_t(ctx.lr), max_index,
+        // 2. WORKLOG #125: crowd models every other call: the previous call's bytes (one frame old pose).
+        bool crowd = false;
+        uint64_t id = 0;
+        uint32_t frame = 0;
+        if (REXCVAR_GET(p2_skin_half_rate)) {
+          frame = p2::skinlog::g_frame.load(std::memory_order_relaxed);
+          crowd = p2halfrate::Crowd(input, n, palette, frame);
+          if (crowd) {
+            p2halfrate::g_calls.fetch_add(1, std::memory_order_relaxed);
+            id = p2halfrate::Identity(input, n, palette);
+            if (p2halfrate::TryReplay(base, id, n, out, bbox_addr, frame)) {
+              replayed();
+              p2halfrate::g_replayed.fetch_add(1, std::memory_order_relaxed);
+              p2halfrate::g_replayed_vertices.fetch_add(n, std::memory_order_relaxed);
+              return;
+            }
+          }
+        }
+        p2skin::Skin(base, out, input, n, palette, bbox_addr, ctx.r1.u32, uint32_t(ctx.lr), max_index,
                      ParallelRunner(), true);
+        if (cache) p2skincache::Store(base, key, n, out, bbox_addr);
+        if (crowd) p2halfrate::Remember(base, id, n, out, bbox_addr, frame);
         return;
       }
       const uint32_t verify = REXCVAR_GET(p2_skinning_fast_verify);

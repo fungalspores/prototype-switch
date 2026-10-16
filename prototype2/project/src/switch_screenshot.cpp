@@ -31,8 +31,10 @@ void Log(const char* text) {
 }  // namespace
 
 extern "C" void P2CollisionSnapshotRequest();
+extern "C" void P2NativeVisualSnapshotRequest();
 extern "C" void RexSwitchScreenshotRequest() {
   P2CollisionSnapshotRequest();
+  P2NativeVisualSnapshotRequest();
   static void* jpeg = nullptr;
   static bool initialized = false;
   char line[160];

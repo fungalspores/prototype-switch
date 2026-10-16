@@ -20,6 +20,7 @@
 #include "texture_binding_reuse.h"
 #include "blocking_record_queue.h"
 #include "occlusion_tracker.h"
+#include "occlusion_batch.h"
 #include <rex/thread.h>
 #include "native_tessellation.h"
 
@@ -287,6 +288,13 @@ REXCVAR_DEFINE_BOOL(p2_native_water_lod_probe, false, "Prototype2",
 REXCVAR_DEFINE_BOOL(p2_native_async_pipelines, true, "Prototype2",
                     "Native renderer: compile new pipelines on a worker thread and skip the "
                     "draws that need them until they are ready, instead of stalling the frame");
+
+namespace {
+std::atomic<uint32_t> p2_visual_snapshot_requests{0};
+}
+extern "C" void P2NativeVisualSnapshotRequest() {
+  p2_visual_snapshot_requests.fetch_add(1,std::memory_order_relaxed);
+}
 
 namespace p2::native {
 namespace shaders {
@@ -582,6 +590,32 @@ struct Renderer::Impl {
   QueryTracker occlusion;
   VkQueryControlFlags occlusion_flags = 0;
   uint64_t occlusion_completed = 0;
+  QueryTracker::Owners occlusion_batch_owners{};
+  uint32_t occlusion_batch_index = QueryTracker::invalid;
+  OcclusionCommandState occlusion_commands;
+  uint64_t occlusion_batches = 0, occlusion_batched_draws = 0;
+  struct VisualFrame {
+    uint64_t frame=0,draws=0,age=0;
+    uint32_t packet=0,fetch=0,selected=0,width=0,height=0,source_width=0,source_height=0;
+    bool available=false;
+  };
+  std::array<VisualFrame,96> visual_frames{};
+  uint32_t visual_cursor=0;
+  void RecordVisualFrame(const VisualFrame& entry) {
+    visual_frames[visual_cursor++%visual_frames.size()]=entry;
+    const uint32_t requests=p2_visual_snapshot_requests.exchange(0,std::memory_order_relaxed);
+    if(!requests)return;
+    REXLOG_INFO("[p2-visual] USER MARKER {} at frame {}; query batches={} coalesced draws={} open={}",
+                requests,entry.frame,occlusion_batches,occlusion_batched_draws,occlusion.open_count());
+    const uint32_t count=std::min<uint32_t>(visual_cursor,visual_frames.size());
+    for(uint32_t i=0;i<count;++i) {
+      const auto& v=visual_frames[(visual_cursor-count+i)%visual_frames.size()];
+      REXLOG_INFO("[p2-visual] frame={} draws={} packet={:08X} fetch={:08X} selected={:08X} "
+                  "size={}x{} source={}x{} age={} view={}",
+                  v.frame,v.draws,v.packet,v.fetch,v.selected,v.width,v.height,
+                  v.source_width,v.source_height,v.age,v.available);
+    }
+  }
   struct Submission {
     VkCommandPool pool = VK_NULL_HANDLE;
     // The main command buffer's own: the setup one is recorded on the ring
@@ -1389,7 +1423,7 @@ struct Renderer::Impl {
     kDrawIndexed = 1u << 13,
     kDrawOcclusion = 1u << 14,
   };
-  void ExecuteDrawCommand(const DrawCommand& d) const {
+  void ExecuteDrawCommand(const DrawCommand& d) {
     VkCommandBuffer c = d.commands;
     const auto& f = device->functions();
     if (d.flags & kDrawPipeline) {
@@ -1435,13 +1469,15 @@ struct Renderer::Impl {
     if (d.flags & kDrawIndexBuffer) {
       f.vkCmdBindIndexBuffer(c, d.index_buffer, d.index_offset, d.index_type);
     }
-    if (d.flags & kDrawOcclusion) f.vkCmdBeginQuery(c, occlusion_pool, d.occlusion_index, occlusion_flags);
+    if (d.flags & kDrawOcclusion) occlusion_commands.Set(d.occlusion_index,
+      [&](uint32_t index){f.vkCmdEndQuery(c,occlusion_pool,index);},
+      [&](uint32_t index){f.vkCmdBeginQuery(c,occlusion_pool,index,occlusion_flags);});
     if (d.flags & kDrawIndexed) {
       f.vkCmdDrawIndexed(c, d.count, 1, 0, 0, 0);
     } else {
       f.vkCmdDraw(c, d.count, 1, 0, 0);
     }
-    if (d.flags & kDrawOcclusion) f.vkCmdEndQuery(c, occlusion_pool, d.occlusion_index);
+
   }
   static constexpr uint32_t kRecordQueueSize = 4096;
   BlockingRecordQueue<DrawCommand,kRecordQueueSize,32> record_work;
@@ -1597,17 +1633,32 @@ struct Renderer::Impl {
     return begun;
   }
   void AppendOcclusion(DrawCommand& draw) {
-    if(!occlusion.open_count())return;
-    Submission& s=current();
-    if(s.occlusion_count>=kOcclusionPerSubmission){occlusion.FailOpen();return;}
-    const auto owners=occlusion.AddOpenPiece();
-    if(!owners.count)return;
-    const uint32_t local=s.occlusion_count++;
-    // One Vulkan query per draw, shared by every guest interval covering it.
-    // Vulkan queries themselves never overlap in the command buffer.
-    s.occlusion_owners[local]=owners;
-    draw.occlusion_index=uint32_t(submission_number % kSubmissionSlots)*kOcclusionPerSubmission+local;
+    if(!occlusion_pool)return;
     draw.flags|=kDrawOcclusion;
+    draw.occlusion_index=QueryTracker::invalid;
+    const auto owners=occlusion.OpenOwners();
+    if(!owners.count) {
+      occlusion_batch_index=QueryTracker::invalid;
+      occlusion_batch_owners={};
+      return;
+    }
+    bool same=occlusion_batch_index!=QueryTracker::invalid &&
+              owners.count==occlusion_batch_owners.count;
+    for(uint32_t i=0;same && i<owners.count;++i)
+      same=owners.ids[i]==occlusion_batch_owners.ids[i];
+    if(same) {
+      draw.occlusion_index=occlusion_batch_index;
+      ++occlusion_batched_draws;
+      return;
+    }
+    Submission& slot=current();
+    if(slot.occlusion_count>=kOcclusionPerSubmission){occlusion.FailOpen();return;}
+    const uint32_t local=slot.occlusion_count++;
+    slot.occlusion_owners[local]=occlusion.AddOpenPiece();
+    occlusion_batch_owners=owners;
+    occlusion_batch_index=uint32_t(submission_number%kSubmissionSlots)*kOcclusionPerSubmission+local;
+    draw.occlusion_index=occlusion_batch_index;
+    ++occlusion_batches;
   }
   void PollOcclusionQueries(bool demand) {
     if(!occlusion.pending())return;
@@ -2148,7 +2199,11 @@ struct Renderer::Impl {
   void EndPass(PassEnd reason) {
     if (in_pass) {
       if (work_stats_enabled) ++pass_end_counts[size_t(reason)];
-      dfn().vkCmdEndRendering(cmd());
+      VkCommandBuffer commands=cmd();  // Drain before touching recorder-local state.
+      occlusion_commands.Close([&](uint32_t index){dfn().vkCmdEndQuery(commands,occlusion_pool,index);});
+      occlusion_batch_index=QueryTracker::invalid;
+      occlusion_batch_owners={};
+      dfn().vkCmdEndRendering(commands);
       in_pass = false;
     }
   }
@@ -5950,7 +6005,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
       }
     }
   }
-  if (skip_depth_prepass && !st.targets.color[0] && !st.targets.color[1] && !st.targets.color[2] &&
+  if (skip_depth_prepass && !occlusion.open_count() && !st.targets.color[0] && !st.targets.color[1] && !st.targets.color[2] &&
       !st.targets.color[3] && st.targets.depth && !IsShadowTarget(st.targets.depth) &&
       st.targets.depth->key.format == uint32_t(xenos::DepthRenderTargetFormat::kD24S8) &&
       !st.depth_control.stencil_enable) {
@@ -7480,6 +7535,11 @@ void Renderer::Impl::Swap(rex::ui::Presenter* presenter, uint32_t frontbuffer, u
   uint32_t source_width = 0, source_height = 0;
   VkImageView source_view =
       textures.GetResolveDestinationView2D(address, guest_swizzle, &source_width, &source_height);
+  const auto* source_dest=textures.FindResolveDestination(address);
+  RecordVisualFrame({frame,frame_draw_count,
+    source_dest && frame>=source_dest->last_written_frame ? frame-source_dest->last_written_frame : UINT64_MAX,
+    frontbuffer & 0x1FFFFFFF,fetch.base_address<<12,address,width,height,
+    source_width,source_height,source_view!=VK_NULL_HANDLE});
   static uint32_t missing_logged = 0;
   if (!source_view && missing_logged < 8) {
     ++missing_logged;
@@ -7642,6 +7702,7 @@ void Renderer::Impl::Swap(rex::ui::Presenter* presenter, uint32_t frontbuffer, u
   if (frame % 600 == 0) {
     REXLOG_INFO("[native-occlusion] matching: address ends {}, overlapping begins {}, repeated begins {}, unmatched ends {}, demand submissions {}",
       occlusion_address_ends,occlusion_overlaps,occlusion_abandoned,occlusion_unmatched_ends,occlusion_demand_submits);
+    REXLOG_INFO("[native-occlusion] batches {}, draws sharing a batch {}",occlusion_batches,occlusion_batched_draws);
     REXLOG_INFO("[native] last 600 frames: skinned ranges {} rewritten / {} unchanged (no hashing), {} MB of "
                 "vertex/index data hashed; depth prepass draws skipped {}, reflection draws skipped {}",
                 skin_log_fresh, skin_log_same, (vertex_hash_bytes - hash_bytes_at_report) >> 20,
