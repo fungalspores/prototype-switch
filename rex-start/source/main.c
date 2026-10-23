@@ -37,69 +37,27 @@ typedef struct
     const char *note_ru, *note_en;
     const char *values[10];                          /* NULL-terminated, written as they are */
     const char *shown[10];                           /* how a value is shown */
+    const char *recommended;                         /* value marked "рекомендуется", NULL = none */
 } option;
 
 static const option options[] =
 {
-    /* Prototype 2 */
+    /* Only the resolution: the one setting that changes what you get on screen. */
     { "prototype2", "p2_render_width", "Разрешение", "Resolution",
-      "Внутреннее, растягивается FSR. Больше — чётче, но тяжелее для видеокарты.",
-      "Internal, scaled with FSR. Higher is sharper but costs the GPU more.",
-      { "640", "720", "800", "880", "960", "1040", "1120", "1200", NULL },
-      { "640x352", "720x400", "800x448", "880x496", "960x544", "1040x592", "1120x624", "1200x672", NULL } },
-    { "prototype2", "p2_native_texture_lod_bias", "Резкость текстур", "Texture sharpness",
-      "Меньше — резче текстуры вдали.", "Lower is sharper far textures.",
-      { "1.0", "0.5", "0.0", NULL }, { "мягко / soft", "средне / medium", "резко / sharp", NULL } },
-    { "prototype2", "p2_native_max_anisotropy", "Анизотропия", "Anisotropic filtering",
-      "Чёткость полов и дорог под углом.", "Floors and roads at an angle.",
-      { "1", "2", "4", NULL }, { "выкл / off", "2x", "4x", NULL } },
-    { "prototype2", "p2_geo_lod_bias_scale", "Детализация моделей", "Model detail",
-      "Меньше — детальнее модели вблизи. Грузит процессор.", "Lower is more detail nearby. Costs the CPU.",
-      { "6.0", "4.0", "2.0", "1.0", NULL },
-      { "мин / lowest", "низкая / low", "средняя / medium", "высокая / high", NULL } },
-    { "prototype2", "p2_shadow_range_scale", "Дальность теней", "Shadow distance",
-      "Тени дальних объектов.", "Shadows of far objects.",
-      { "0.0", "0.2", "0.3", "0.5", "0.7", "1.0", NULL },
-      { "выкл / off", "20%", "30%", "50%", "70%", "100%", NULL } },
-    { "prototype2", "p2_ped_max_scale", "Пешеходы", "Pedestrians",
-      "Сильнее всего грузит процессор.", "Costs the CPU the most.",
-      { "0.0", "0.1", "0.2", "0.3", "0.5", "1.0", NULL },
-      { "нет / none", "10%", "20%", "30%", "50%", "100%", NULL } },
-    { "prototype2", "p2_vehicle_max_scale", "Машины", "Vehicles",
-      "Тоже грузит процессор.", "Costs the CPU too.",
-      { "0.0", "0.05", "0.1", "0.15", "0.3", "1.0", NULL },
-      { "нет / none", "5%", "10%", "15%", "30%", "100%", NULL } },
-    { "prototype2", "p2_skin_half_rate", "Анимация через кадр", "Half-rate skinning",
-      "Пересчёт анимации моделей через кадр: больше кадров, анимация чуть резче.",
-      "Skin meshes every other frame: more FPS, slightly steppier animation.",
-      { "false", "true", NULL }, { "выкл / off", "вкл / on", NULL } },
-    { "prototype2", "p2_native_skip_depth_prepass", "Пропуск depth prepass", "Skip depth prepass",
-      "Экономит время видеокарты; возможны мелкие артефакты.",
-      "Saves GPU time; small artefacts are possible.",
-      { "false", "true", NULL }, { "выкл / off", "вкл / on", NULL } },
-    /* Prototype */
+      "Внутреннее, растягивается на экран. Меньше — быстрее и холоднее, но мыльнее.",
+      "Internal, scaled to the screen. Lower is faster and cooler but softer.",
+      { "640", "800", "960", "1200", NULL },
+      { "640x352", "800x448", "960x544", "1200x672", NULL }, "800" },
     { "prototype", "proto_render_width", "Разрешение", "Resolution",
-      "Внутреннее, растягивается FSR. Меньше — быстрее, но мыльнее.",
-      "Internal, scaled with FSR. Lower is faster but softer.",
-      { "1280", "1120", "1040", "960", "880", "800", "720", "640", NULL },
-      { "1280x720", "1120x624", "1040x592", "960x544", "880x496", "800x448", "720x400", "640x352", NULL } },
-    { "prototype", "p2_native_texture_lod_bias", "Резкость текстур", "Texture sharpness",
-      "Меньше — резче текстуры вдали.", "Lower is sharper far textures.",
-      { "1.0", "0.5", "0.0", NULL }, { "мягко / soft", "средне / medium", "резко / sharp", NULL } },
-    { "prototype", "p2_native_max_anisotropy", "Анизотропия", "Anisotropic filtering",
-      "Чёткость полов и дорог под углом.", "Floors and roads at an angle.",
-      { "1", "2", "4", NULL }, { "выкл / off", "2x", "4x", NULL } },
-    { NULL, "p2_guest_core_mask", "Четвёртое ядро", "Fourth CPU core",
-      "15 — игре доступны все 4 ядра (быстрее, но греет), 7 — только 0-2.",
-      "15 = all four cores for the game (faster, hotter), 7 = cores 0-2 only.",
-      { "15", "7", NULL }, { "вкл / on", "выкл / off", NULL } },
-    /* both games */
-    { NULL, "present_effect", "Масштабирование", "Upscaling",
-      "Как картинка растягивается на экран.", "How the picture is scaled to the screen.",
-      { "fsr", "bilinear", NULL }, { "FSR 1", "обычное / bilinear", NULL } },
-    { NULL, "user_language", "Язык", "Language",
-      "Если в вашей копии игры есть этот язык.", "If your copy of the game has it.",
-      { "12", "1", NULL }, { "Русский", "English", NULL } },
+      "Внутреннее, растягивается на экран. Меньше — быстрее и холоднее, но мыльнее.",
+      "Internal, scaled to the screen. Lower is faster and cooler but softer.",
+      { "640", "720", "960", "1280", NULL },
+      { "640x352", "720x400", "960x544", "1280x720", NULL }, "720" },
+    { "shd", "shd_render_width", "Разрешение", "Resolution",
+      "Внутреннее, растягивается на экран. Меньше — быстрее и холоднее, но мыльнее.",
+      "Internal, scaled to the screen. Lower is faster and cooler but softer.",
+      { "640", "960", "1280", NULL },
+      { "640x360", "960x540", "1280x720", NULL }, "640" },
 };
 
 #define OPTION_COUNT ((int)(sizeof(options) / sizeof(options[0])))
@@ -209,6 +167,8 @@ static void read_current( void )
         chosen[i] = 0;
         original[i] = 0;
         if (options[i].game && strcmp( options[i].game, program_stem )) continue;  /* another game's */
+        /* Silent Hill: only its resolution -- the shared Prototype keys do nothing there. */
+        if (!options[i].game && !strcmp( program_stem, "shd" )) continue;
         /* A key missing from the TOML is still offered: value 0 is the port's default,
          * and write_settings appends the key only if the user moves away from it. */
         shown_list[shown_count++] = i;
@@ -221,9 +181,22 @@ static void read_current( void )
 /* The height that goes with a width (p2_render_height follows p2_render_width, proto_ likewise). */
 static const char *height_for( const char *width )
 {
-    static const char *pairs[][2] = { { "640", "352" }, { "800", "448" }, { "960", "544" },
+    static const char *pairs[][2] = { { "640", "352" }, { "720", "400" }, { "800", "448" }, { "880", "496" }, { "960", "544" },
                                       { "1040", "592" }, { "1120", "624" }, { "1200", "672" },
                                       { "1280", "720" } };
+    unsigned int i;
+
+    for (i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
+        if (!strcmp( width, pairs[i][0] )) return pairs[i][1];
+    return NULL;
+}
+
+/* Silent Hill's own frame is 1280x720, a true 16:9, and its heights are multiples of 16 rather
+ * than the Prototypes' grid. Its own 720 is kept exact instead of coming out of the arithmetic. */
+static const char *shd_height_for( const char *width )
+{
+    static const char *pairs[][2] = { { "640", "360" }, { "720", "400" }, { "800", "448" }, { "880", "496" },
+                                      { "960", "540" }, { "1040", "585" }, { "1120", "630" }, { "1280", "720" } };
     unsigned int i;
 
     for (i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
@@ -248,6 +221,12 @@ static void write_settings( void )
         int i = shown_list[s];
         if (!strcmp( options[i].key, "p2_render_width" )) height_key = "p2_render_height";
         else if (!strcmp( options[i].key, "proto_render_width" )) height_key = "proto_render_height";
+        else if (!strcmp( options[i].key, "shd_render_width" ))
+        {
+            height_key = "shd_render_height";
+            height = shd_height_for( options[i].values[chosen[i]] );
+            continue;
+        }
         else continue;
         height = height_for( options[i].values[chosen[i]] );
     }
@@ -368,6 +347,13 @@ static void draw_settings( int picked )
         draw_text( 90 + draw_width( 28, o->title_ru ) + 14, y, 20, GREY, o->title_en );
         snprintf( value, sizeof(value), "< %s >", o->shown[chosen[i]] );
         draw_text( 1190 - draw_width( 26, value ), y, 26, colour, value );
+        /* Mark the value we measured as the best trade-off. */
+        if (o->recommended && !strcmp( o->values[chosen[i]], o->recommended ))
+        {
+            const char *mark = "рекомендуется / recommended";
+            draw_text( 1190 - draw_width( 26, value ) - draw_width( 18, mark ) - 16, y + 4, 18,
+                       GREY, mark );
+        }
         draw_text( 90, y + 30, 18, GREY, o->note_ru );
         draw_text( 90, y + 54, 18, GREY, o->note_en );
     }
