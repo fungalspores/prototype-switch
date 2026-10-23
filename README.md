@@ -27,7 +27,7 @@ Ready builds (NROs, settings, HOME-menu NSP forwarders): see **Releases**.
 | Sound | yes | yes |
 | Saves | yes (fixed) | yes |
 
-\* Switch OLED (Mariko) with sys-clk / Horizon OC at CPU 1785 / GPU 768-1152 / RAM 2333 MHz. Lower at stock clocks.
+\* Switch Lite (Mariko) with sys-clk / Horizon OC at CPU 1785 / GPU 768-1152 / RAM 2333 MHz. Lower at stock clocks.
 
 ## Install
 
