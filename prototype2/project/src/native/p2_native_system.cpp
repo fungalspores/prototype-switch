@@ -409,7 +409,21 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
   }
 
+  // The fast path for the registers the draws write (0x1928 and up): no special case lives there,
+  // so a changed value only needs the store and the renderer's bookkeeping. Measured in Prototype
+  // with proto_stage_timer: 25,000 register writes per slow frame, 6.3 ms of the ring thread.
   void WriteRegister(uint32_t index, uint32_t value) {
+    if (index >= 0x1928 && index < kRegisterCount) [[likely]] {
+      const uint32_t old_value = registers_[index];
+      if (old_value == value) return;
+      registers_[index] = value;
+      renderer_.RegisterWritten(index, old_value, value);
+      return;
+    }
+    WriteRegisterSlow(index, value);
+  }
+
+  void WriteRegisterSlow(uint32_t index, uint32_t value) {
     if (index >= kRegisterCount) {
       return;
     }

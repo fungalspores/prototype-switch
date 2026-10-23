@@ -152,45 +152,84 @@ class Renderer {
 
   // Called for every register the command ring writes, so constant uploads
   // can be reused while their registers stay unchanged.
+  // One byte per register says what a changed value invalidates: the chain of range checks this
+  // replaced ran on every write, and the ring thread does 25,000 of them in a slow frame
+  // (proto_stage_timer: 6.3 ms). Filled once by BuildRegisterKinds().
+  enum RegisterKind : uint8_t {
+    kRegIgnored = 0,  // written every draw or only read by resolves: no cache depends on it
+    kRegState,        // the render state the draws cache (and its rolling hash below 0x2400)
+    kRegStateNoHash,  // state, outside the hashed context block
+    kRegIndex,        // vertex index range and offset: system constants only
+    kRegVsFloat,
+    kRegPsFloat,
+    kRegFetch,
+    kRegBoolLoop,
+  };
+  static constexpr uint32_t kRegisterKindCount = 0x5000;
+  struct RegisterKinds {
+    uint8_t kind[kRegisterKindCount];
+    RegisterKinds() {
+      for (uint32_t i = 0; i < kRegisterKindCount; ++i) {
+        uint8_t k;
+      if (i >= 0x4000) {
+        k = i < 0x4400 ? kRegVsFloat
+             : i < 0x4800 ? kRegPsFloat
+             : i < 0x48C0 ? kRegFetch
+             : i < 0x4928 ? kRegBoolLoop
+                          : kRegStateNoHash;
+      } else if (i >= 0x2100 && i <= 0x2102) {
+        k = kRegIndex;
+      } else if (i == 0x2103 || (i >= 0x21F9 && i <= 0x21FC) || (i >= 0x2318 && i <= 0x231F) ||
+                 i == 0x2324 || i == 0x2325 || i == 0x2293 || (i >= 0x0578 && i <= 0x057F) ||
+                 i == 0x01DC || i == 0x01DD || (i >= 0x0A2F && i <= 0x0A31) || i == 0x0C44 ||
+                 i == 0x0C45 || i == 0x01C5) {
+        k = kRegIgnored;
+      } else {
+        k = (i >= 0x2000 && i < 0x2400) ? kRegState : kRegStateNoHash;
+      }
+        kind[i] = k;
+      }
+    }
+  };
+
+  // Called for every register the command ring writes, so constant uploads
+  // can be reused while their registers stay unchanged.
   void RegisterWritten(uint32_t index, uint32_t old_value, uint32_t new_value) {
-    if (index >= 0x4000) {
-      if (index < 0x4400) {
+    static const RegisterKinds kinds;
+    const uint8_t kind = index < kRegisterKindCount ? kinds.kind[index] : uint8_t(kRegStateNoHash);
+    switch (kind) {
+      case kRegIgnored:
+        return;
+      case kRegState:
+        ++state_generation_;
+        ++state_change_counts_[index];
+        // The render state is the context block; its hash is kept up to date one register at a
+        // time (each register contributes Mix(index, value), and an XOR swaps old for new).
+        state_hash_ ^= Mix(index, old_value) ^ Mix(index, new_value);
+        return;
+      case kRegStateNoHash:
+        ++state_generation_;
+        if (index < 0x4000) ++state_change_counts_[index];
+        return;
+      case kRegIndex:
+        ++index_generation_;
+        return;
+      case kRegVsFloat:
         ++vs_float_generation_;
-      } else if (index < 0x4800) {
+        return;
+      case kRegPsFloat:
         ++ps_float_generation_;
-      } else if (index < 0x48C0) {
+        return;
+      case kRegFetch: {
         ++fetch_generation_;
-        uint32_t slot_bit = 1u << ((index - 0x4800) / 6);
+        const uint32_t slot_bit = 1u << ((index - 0x4800) / 6);
         texture_fetch_dirty_ |= slot_bit;
         vertex_fetch_dirty_ |= slot_bit;
-      } else if (index < 0x4928) {
-        ++bool_loop_generation_;
-      } else {
-        ++state_generation_;
+        return;
       }
-      return;
-    }
-    // Vertex index range and offset: system constants only.
-    if (index >= 0x2100 && index <= 0x2102) {
-      ++index_generation_;
-      return;
-    }
-    // Registers written for every draw, or only read by resolves and the
-    // ring, do not invalidate the render state the draws cache.
-    if (index == 0x2103 || (index >= 0x21F9 && index <= 0x21FC) ||
-        (index >= 0x2318 && index <= 0x231F) || index == 0x2324 || index == 0x2325 ||
-        index == 0x2293 || (index >= 0x0578 && index <= 0x057F) || index == 0x01DC ||
-        index == 0x01DD || (index >= 0x0A2F && index <= 0x0A31) || index == 0x0C44 ||
-        index == 0x0C45 || index == 0x01C5) {
-      return;
-    }
-    ++state_generation_;
-    ++state_change_counts_[index];
-    // The render state is the context block; its hash is kept up to date one
-    // register at a time (each register contributes Mix(index, value), and
-    // an XOR swaps the old contribution for the new one).
-    if (index >= 0x2000 && index < 0x2400) {
-      state_hash_ ^= Mix(index, old_value) ^ Mix(index, new_value);
+      case kRegBoolLoop:
+        ++bool_loop_generation_;
+        return;
     }
   }
 

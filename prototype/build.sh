@@ -10,6 +10,11 @@ export DEVKITPRO=${DEVKITPRO:-/opt/devkitpro}
 python3 tools/patch_generated.py generated/default
 python3 tools/prepare_proto_codegen.py generated/default
 python3 tools/prepare_no_volatile.py generated/default
+# Speed patches from mgr-nx-deko (tuancapoo, GPL-3.0): guest CAS without the trailing dmb, vector byte
+# reversal without a table lookup, constant shuffles as one permutation.
+python3 ../tools/mgr/guest_cas.py --gen generated/default
+python3 ../tools/mgr/vec_byteswap.py --gen generated/default
+python3 ../tools/mgr/pch_neon_shuffles.py generated/default/prototype_pch.h
 cmake -S . -B build/switch -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/switch-devkitA64.cmake" \
   -DREXSDK_DIR="$REXSDK_DIR" -DREXGLUE_SWITCH_NVK_SDK="$NVK_SDK"

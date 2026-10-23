@@ -1,4 +1,4 @@
-# PROTOTYPE / Nintendo Switch - 1.0.0 (free, t.me/fspores)
+# PROTOTYPE / Nintendo Switch - 1.4.0 (free, t.me/fspores)
 # ReXGlue port; SDK masseffect-nx + prototype2-nx patch; native renderer from prototype2-nx (penettrator).
 # user_language: 12 = Russian, 1 = English (depends on your copy of the game).
 p2_renderer = "native"
@@ -24,29 +24,31 @@ p2_native_dynamic_buffer_upload = true
 p2_native_sampled_stable_ranges = true
 p2_native_sampled_min_bytes = 16384
 p2_native_max_anisotropy = 1
-p2_native_texture_lod_bias = 1.0
+p2_native_texture_lod_bias = 0.0
 p2_native_async_present = false
 present_effect = "fsr"
 # Internal render size (1280x720 = the game's own), scaled to the screen with present_effect.
-proto_render_width = 1280
-proto_render_height = 720
+proto_render_width = 720
+proto_render_height = 400
 # Prototype 2 specific skips are off: they were matched to its passes, not to Prototype 1's.
 p2_native_skip_depth_prepass = false
 p2_native_reflection_half_rate = false
 p2_native_skin_unique = false
 
 # Threads and cores (three cores; core 3 only with a forwarder that allows it).
-p2_msr_lock_mode = 2
 p2_guest_priorities = false
 p2_guest_affinity = false
 p2_host_core_mask = 6
 p2_main_thread_priority = 58
-p2_main_thread_mask = 6
-p2_guest_core_mask = 7
-p2_audio_core_mask = 6
+p2_main_thread_mask = 14
+p2_guest_core_mask = 15
+p2_audio_core_mask = 8
 
 # Logs: warnings only.
 log_level = "warn"
 log_flush_level = "warn"
 p2_frame_diagnostics = false
 vulkan_validation_enabled = false
+
+p2_native_shadow_max_cascades = 2
+proto_render_thread_priority = 57

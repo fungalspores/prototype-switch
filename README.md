@@ -22,12 +22,12 @@ Ready builds (NROs, settings, HOME-menu NSP forwarders): see **Releases**.
 | | Prototype | Prototype 2 |
 |---|---|---|
 | Port | this project (fungalspores) | [penettrator](https://github.com/penettrator/prototype2-nx) 0.2.0, built from his sources with our fixes |
-| Picture | 1280x720, adjustable | 960x544 + FSR 1 (the original release: 800x448) |
-| FPS* | menus and cutscenes 30-60, gameplay 25-30 | city 25-30 |
+| Picture | 720x400 + FSR 1, adjustable (640 to 1280) | 800x448 + FSR 1, adjustable (640 to 1200) |
+| FPS* | menus and cutscenes 30-60, gameplay 22-30 (lows 17 instead of 9 since 1.4.0) | city 25-30 |
 | Sound | yes | yes |
 | Saves | yes (fixed) | yes |
 
-\* Switch Lite (Mariko) with sys-clk / Horizon OC at CPU 1785 / GPU 768-1152 / RAM 2333 MHz. Lower at stock clocks.
+\* Switch Lite (Mariko) with Horizon OC at CPU 1963 / GPU 1152 / RAM 2333 MHz. Lower at stock clocks.
 
 ## Install
 
@@ -45,8 +45,8 @@ on the SD card. FAT32 is fine.
 
    From an ISO: `extract-xiso -x "Prototype.iso" -d game`. `$SystemUpdate` is not needed.
 3. Install both NSPs from `nsp/` with DBI and start the games from the HOME menu. They start through
-   `rex-start.nro`: it shows the game for five seconds, and **+** opens its settings (resolution, textures,
-   language and so on) written straight into the game's TOML.
+   `rex-start.nro`: it shows the game for five seconds, and **+** opens its settings (the internal resolution)
+   written straight into the game's TOML.
    Without an NSP: hold **R** while starting any installed game and pick the port in the Homebrew menu.
    **Not from the Album:** applet mode does not have enough memory.
 
@@ -61,16 +61,12 @@ The code is recompiled from one specific `default.xex`; other editions may not s
 
 `prototype.toml` / `prototype2.toml` next to the NRO. Restart the game after a change.
 
-Prototype 2 picture (ours / the original release):
-
-| Setting | Ours | Original | |
+| Setting | Prototype | Prototype 2 | |
 |---|---|---|---|
-| `p2_render_width` x `p2_render_height` | 960x544 | 640x352 | internal resolution, scaled with FSR |
-| `p2_native_texture_lod_bias` | 0.5 | 1.0 | lower = sharper textures |
-| `p2_native_max_anisotropy` | 2 | 1 | |
-| `p2_geo_lod_bias_scale` | 2.0 | 4.0 | lower = more detailed meshes |
-| `p2_shadow_range_scale` | 0.5 | 0.3 | |
-| `p2_ped_max_scale`, `p2_vehicle_max_scale` | 0.3, 0.15 | 0.3, 0.15 | crowds cost the most CPU |
+| internal resolution | `proto_render_width` x `_height` 720x400 | `p2_render_width` x `_height` 800x448 | the game itself draws into the smaller frame (scene, depth, effects); FSR scales it to the screen. The height rounds down to a multiple of 16 |
+| `p2_native_max_anisotropy` | 1 | 2 | |
+| `p2_native_shadow_max_cascades` | 2 | 4 | shadow cascades (4 = the game's own) |
+| `p2_ped_max_scale`, `p2_vehicle_max_scale` | - | 0.15, 0.15 | pedestrians and cars (1.0 = the game's own); crowds cost the most CPU |
 
 `user_language`: 12 Russian, 1 English (depends on your copy).
 
@@ -81,7 +77,8 @@ give it (`0150524F54320000`) its own clock profile. Do not use high overclocks o
 
 A small homebrew between the HOME icon and the port, after
 [winenx-start](https://github.com/fungalspores/winenx-start): libnx framebuffer, the console's own font through
-FreeType, no SDL. It offers only keys already present in the game's TOML and copies every other line through
+FreeType, no SDL. It offers the internal resolution only (Prototype 640 to 1280, Prototype 2 640x352 to 1200x672,
+Silent Hill: Downpour too) and copies every other line through
 untouched (quotes and line endings included); the height follows the width it is paired with. Press nothing and
 the game starts as before.
 
@@ -111,6 +108,18 @@ the game starts as before.
 - No temperature-sensor polling: an open `ts` session for the whole game coincided with Horizon OC's `hoc:clk`
   crashing under load (and `pcv`/`ptm`/`Bus` after it).
 
+**Prototype, 1.4.0** (Prototype 2 in the 1.4.0 release is the 1.3.0 build; the same changes made it softer and
+slower there and are not shipped for it yet):
+- PGO is back. Releases 1.2.0 and 1.3.0 were built without the profile by mistake (the release builds came from
+  a build directory configured without it); `tools/make_release.sh` now refuses a build without the profile.
+- Speed patches from [mgr-nx-deko](https://github.com/tuancapoo/mgr-nx-deko) on the generated code (`tools/mgr/`):
+  a guest `stwcx.` is `__atomic_compare_exchange_n` instead of `__sync_bool_compare_and_swap`, which GCC follows
+  with a `dmb ish` on the A57 (611 barriers after a store-exclusive in Prototype, 24 left); the 16-byte byte
+  reversal of every vector load and store is REV64 + EXT that GCC folds into one constant TBL, instead of a mask
+  load, an AND and a TBL (vector ANDs 9687 -> 1770); constant word shuffles are one permutation instead of a chain
+  of lane inserts. The lowest frame rate in fights went from about 9 to 17 fps.
+- The pipeline cache and the prewarm list are fsync'd before the rename: leaving through HOME lost the session's
+  compiled pipelines, and the next start compiled them again.
 A splash with the credit is shown for 3 seconds before each game (skip with A/B/+).
 
 ## Building
@@ -136,7 +145,7 @@ works the same way. Outline:
    `cmake -S switch -B build/switch ... -DP2_DIRECT_CALLS=ON -DP2_GUEST_LTO=ON -DP2_LEAF_LOCALS=ON -DP2_ARM_VMX=ON`
    (~25 min with LTO).
 6. **Settings screen**: `rex-start/build.sh` (devkitA64 + FreeType from the portlibs).
-7. **NSP forwarders**: `forwarder/build_forwarder.py --launcher sdmc:/switch/rex-start.nro --nro sdmc:/switch/prototype-nx/prototype.nro --icon art/icon_prototype.jpg --title Prototype --author fungalspores --version 1.0.0 --tid 0150524F54310000 --keys <your prod.keys> --out out/`
+7. **NSP forwarders**: `forwarder/build_forwarder.py --launcher sdmc:/switch/rex-start.nro --nro sdmc:/switch/prototype-nx/prototype.nro --icon art/icon_prototype.jpg --title Prototype --author fungalspores --version 1.4.0 --tid 0150524F54310000 --keys <your prod.keys> --out out/`
    (needs [Forwarder-Mod](https://github.com/Skywalker25/Forwarder-Mod) `9853bd9` cloned to `forwarder/loader`).
    Your own `prod.keys` only; never publish them.
 
@@ -146,6 +155,7 @@ works the same way. Outline:
 - **NebadasSwifty** — [masseffect-nx](https://github.com/nebadasSwifty/masseffect-nx), the SDK with the Horizon layer.
 - **StevensND** — the Horizon layer of ReXGlue and [nfsmw-nx](https://github.com/StevensND/nfsmw-nx).
 - **R-drg** — [project8-sw](https://github.com/R-drg/project8-sw), the base of the native renderer.
+- **tuancapoo**: [mgr-nx-deko](https://github.com/tuancapoo/mgr-nx-deko), the post-codegen speed passes in `tools/mgr/`.
 - **Tom Clay** and the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk); the [Xenia](https://xenia.jp) project.
 - **danfromtico** — [mesa-switch](https://github.com/danfromtico/mesa-switch); the [Mesa](https://mesa3d.org) project.
 - **Skywalker25** — [Forwarder-Mod](https://github.com/Skywalker25/Forwarder-Mod); switchbrew (libnx); devkitPro.

@@ -37,6 +37,7 @@ extern "C" void RexSwitchPerfSceneFrame(uint32_t draws);
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <unistd.h>  // fsync
 #include <thread>
 
 #include <fmt/format.h>
@@ -7981,6 +7982,13 @@ void Renderer::Impl::SavePrewarm() {
     bool written = false;
     if (FILE* file = rex::filesystem::OpenFile(temporary, "wb")) {
       written = fwrite(data->data(), data->size(), 1, file) == 1;
+      // Flushed is not written: the bytes only reach the file system service, which may still
+      // hold them. A game closed with HOME (the usual way) lost the session's compiled pipelines,
+      // and the next start compiled them all again. fsync before the rename publishes the file.
+      if (written) {
+        std::fflush(file);
+        fsync(fileno(file));
+      }
       if (fclose(file) != 0) written = false;
       if (written) {
         std::error_code error;
@@ -8022,6 +8030,13 @@ void Renderer::Impl::SaveDriverCache() {
                                  XXH3_64bits(data->data(), data->size())};
       bool written = fwrite(header, sizeof(header), 1, file) == 1 &&
                      fwrite(data->data(), data->size(), 1, file) == 1;
+      // Flushed is not written: the bytes only reach the file system service, which may still
+      // hold them. A game closed with HOME (the usual way) lost the session's compiled pipelines,
+      // and the next start compiled them all again. fsync before the rename publishes the file.
+      if (written) {
+        std::fflush(file);
+        fsync(fileno(file));
+      }
       if (fclose(file) != 0) written = false;
       if (written) {
         std::error_code error;

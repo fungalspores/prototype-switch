@@ -1,17 +1,22 @@
 #!/bin/sh
 # Builds the rutracker release folder: both NROs + toml, both NSP forwarders, README, licenses. No game data, no keys.
 set -e
-OUT=/var/minis/mounts/Projects/prototype_x360_transfer/RELEASE/Prototype-1-2-Switch-1.0.0
+OUT=${OUT:-/var/minis/mounts/Projects/prototype_x360_transfer/RELEASE/Prototype-1-2-Switch-${VER:-1.4.0}}
 rm -rf "$OUT"
 mkdir -p "$OUT/switch/prototype-nx" "$OUT/switch/prototype2-nx" "$OUT/nsp" "$OUT/licenses"
 P1=/root/proto/x360/prototype_nx
-P2=/root/proto/x360/p2nx-build
-cp $P1/build/switch/prototype.nro "$OUT/switch/prototype-nx/"
+P2=/work
+# The PGO builds (build/pgo with PROTO_PGO=USE, /work/build/switch with P2_PGO=USE). 1.2.0 and 1.3.0 took
+# P1 from build/switch, configured without the profile: check the cache before copying.
+grep -q "^PROTO_PGO:STRING=USE" $P1/build/pgo/CMakeCache.txt || { echo "Prototype: build/pgo is not a PGO build"; exit 1; }
+grep -q "^P2_PGO:STRING=USE" $P2/build/switch/CMakeCache.txt || { echo "Prototype 2: not a PGO build"; exit 1; }
+cp $P1/build/pgo/prototype.nro "$OUT/switch/prototype-nx/"
 cp $P1/prototype.toml.release "$OUT/switch/prototype-nx/prototype.toml"
 cp $P2/build/switch/prototype2.nro "$OUT/switch/prototype2-nx/"
 cp $P2/config/prototype2.toml.fspores "$OUT/switch/prototype2-nx/prototype2.toml"
 cp /root/proto/release_nsp/*.nsp "$OUT/nsp/"
-cp /root/proto/release/README.txt "$OUT/README.txt"
+cp "$(dirname "$0")/../release/README.txt" "$OUT/README.txt"
+cp /root/proto/gh/prototype-switch/rex-start/rex-start.nro "$OUT/switch/rex-start.nro"
 cp /root/proto/p2nx/LICENSE "$OUT/LICENSE"
 cp /root/proto/p2nx/THIRD_PARTY_NOTICES.md "$OUT/licenses/THIRD_PARTY_NOTICES_Prototype2.md"
 cp /root/proto/menx/sdk/LICENSE "$OUT/licenses/LICENSE-ReXGlue-SDK.txt"

@@ -37,6 +37,7 @@ extern "C" void RexSwitchPerfSceneFrame(uint32_t draws);
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <unistd.h>  // fsync
 #include <thread>
 
 #include <fmt/format.h>
@@ -45,6 +46,8 @@ extern "C" void RexSwitchPerfSceneFrame(uint32_t draws);
 #include <vector>
 
 #include <xxhash.h>
+
+#include "stage_timer.h"
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
@@ -5907,6 +5910,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
     ++stats().skipped_by_reason[reason & 15];
   };
 
+  p2::stage::Marks stage_marks;
   auto initiator = r.Get<reg::VGT_DRAW_INITIATOR>();
   uint32_t guest_count = initiator.num_indices;
   if (!guest_count) {
@@ -6026,6 +6030,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
   const PassTargets& targets = st.targets;
   const PipelineLayout* layout = st.layout;
 
+  stage_marks.Mark(p2::stage::kDrawSetup);
   // Indices.
   BeginRecording();
   auto dma_size = r.Get<reg::VGT_DMA_SIZE>();
@@ -6187,6 +6192,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
     }
   }
 
+  stage_marks.Mark(p2::stage::kDrawIndices);
   // Fetch constants: the vertex buffers the shader reads are pointed at their
   // copies in the stream. Only slots written since they were last resolved,
   // or not yet resolved this frame, are looked at again.
@@ -6202,6 +6208,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
   uint32_t dirty_slots = owner->vertex_fetch_dirty_;
   owner->vertex_fetch_dirty_ = 0;
   if (dirty_slots) {
+    p2::stage::Scope stage_dirty(p2::stage::kFetchDirty);
     for (uint32_t i = 0; i < 96; ++i) {
       if (dirty_slots & (1u << (i / 3))) fetch_resolved_frame[i] = 0;
     }
@@ -6214,6 +6221,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
       }
     }
   }
+  uint64_t stage_scan0 = p2::stage::g_enabled ? p2::stage::Now() : 0;
   for (uint32_t word = 0; word < 3; ++word) {
     uint32_t bits = vs_constants.vertex_fetch_bitmap[word];
     uint32_t bit;
@@ -6237,8 +6245,15 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
         continue;
       }
       const uint8_t* source = memory->TranslatePhysical<const uint8_t*>(address);
+      uint64_t stage_t0 = p2::stage::g_enabled ? p2::stage::Now() : 0;
       VertexHash& known = vertex_hashes[(uint64_t(address) << 32) | bytes];
       RangeHash(known, source, bytes, address);
+      if (stage_t0) {
+        const uint64_t now = p2::stage::Now();
+        p2::stage::g_ns[p2::stage::kFetchHash] += now - stage_t0;
+        ++p2::stage::g_count[p2::stage::kFetchHash];
+        stage_t0 = now;
+      }
       VertexRangeKey range_key = {address, bytes, known.hash, known.epoch, known.frame_local};
       uint64_t found = FindRange(range_key);
       VkDeviceSize range_offset;
@@ -6253,7 +6268,15 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
         AddRange(range_key, stream_head - bytes);
       }
       dword0 = (guest_dword0 & 0x3) | uint32_t(range_offset);
+      if (stage_t0) {
+        p2::stage::g_ns[p2::stage::kFetchCopy] += p2::stage::Now() - stage_t0;
+        ++p2::stage::g_count[p2::stage::kFetchCopy];
+      }
     }
+  }
+  if (stage_scan0) {
+    p2::stage::g_ns[p2::stage::kFetchScan] += p2::stage::Now() - stage_scan0;
+    ++p2::stage::g_count[p2::stage::kFetchScan];
   }
   if (vertex_ranges.size() > 65536) {
     vertex_ranges.clear();
@@ -6279,6 +6302,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
   } else {
     uint8_t* fetch_out = Allocate(kFetchConstantsBytes, ubo_alignment, fetch_offset);
     if (!fetch_out) return skip(9);
+    p2::stage::Scope stage_upload(p2::stage::kFetchUpload);
     std::memcpy(fetch_out, fetch_words.data(), kFetchConstantsBytes);
     std::memcpy(last_fetch_words, fetch_words.data(), sizeof(last_fetch_words));
     last_fetch = {submission_number, 0, nullptr, frame, fetch_offset};
@@ -6287,6 +6311,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
   uint8_t* last_float_out = nullptr;
   const bool motion_blur_draw = motion_blur_off && ps && ps->ucode_data_hash() == kMotionBlurPs;
   const bool dof_draw = dof_off && ps && ps->ucode_data_hash() == kMotionBlurPs;
+  stage_marks.Mark(p2::stage::kDrawFetch);
   auto write_float_constants = [&](const Shader::ConstantRegisterMap& map, uint32_t base_register,
                                    VkDeviceSize& offset) -> bool {
     // Only the constants the shader reads: the binding's fixed range reads on
@@ -6388,6 +6413,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
     }
   }
 
+  stage_marks.Mark(p2::stage::kDrawFloat);
   // Textures and samplers, reused while no fetch slot they come from was
   // written, within one frame (content changes are looked for once a frame)
   // and one submission (uploads go in its setup command buffer).
@@ -6599,6 +6625,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
     owner->texture_fetch_dirty_ &= ~tb.slots;
   }
 
+  stage_marks.Mark(p2::stage::kDrawTextures);
   // System constants come from the render state, the texture fetch
   // constants and the vertex index registers.
   bool system_same = last_system.submission == submission_number &&
@@ -6625,6 +6652,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
     last_system = {submission_number, 0, nullptr, frame, system_offset};
   }
 
+  stage_marks.Mark(p2::stage::kDrawSystem);
   // Record.
   if (!BeginPass(targets)) return skip(14);
   DrawCommand d;
@@ -6760,6 +6788,7 @@ void Renderer::Impl::Draw(const uint32_t* immediate_indices, uint32_t immediate_
   }
   AppendOcclusion(d);
   SubmitDraw(d);
+  stage_marks.Mark(p2::stage::kDrawRecord);
   ProfileDraw(d.count);
   ++frame_draw_count;
   ++stats().draws;
@@ -7981,6 +8010,13 @@ void Renderer::Impl::SavePrewarm() {
     bool written = false;
     if (FILE* file = rex::filesystem::OpenFile(temporary, "wb")) {
       written = fwrite(data->data(), data->size(), 1, file) == 1;
+      // Flushed is not written: the bytes only reach the file system service, which may still
+      // hold them. A game closed with HOME (the usual way) lost the session's compiled pipelines,
+      // and the next start compiled them all again. fsync before the rename publishes the file.
+      if (written) {
+        std::fflush(file);
+        fsync(fileno(file));
+      }
       if (fclose(file) != 0) written = false;
       if (written) {
         std::error_code error;
@@ -8022,6 +8058,13 @@ void Renderer::Impl::SaveDriverCache() {
                                  XXH3_64bits(data->data(), data->size())};
       bool written = fwrite(header, sizeof(header), 1, file) == 1 &&
                      fwrite(data->data(), data->size(), 1, file) == 1;
+      // Flushed is not written: the bytes only reach the file system service, which may still
+      // hold them. A game closed with HOME (the usual way) lost the session's compiled pipelines,
+      // and the next start compiled them all again. fsync before the rename publishes the file.
+      if (written) {
+        std::fflush(file);
+        fsync(fileno(file));
+      }
       if (fclose(file) != 0) written = false;
       if (written) {
         std::error_code error;
@@ -8158,17 +8201,20 @@ struct CpuTimer {
 
 void Renderer::Draw(const uint32_t* immediate_indices, uint32_t immediate_index_words) {
   CpuTimer timer(stats_.cpu_ns);
+  p2::stage::Scope stage_scope(p2::stage::kDrawTotal);
   impl_->Draw(immediate_indices, immediate_index_words);
 }
 
 void Renderer::Resolve() {
   CpuTimer timer(stats_.cpu_ns);
+  p2::stage::Scope stage_scope(p2::stage::kResolve);
   impl_->Resolve();
 }
 
 void Renderer::Swap(rex::ui::Presenter* presenter, uint32_t frontbuffer, uint32_t width,
                     uint32_t height) {
   CpuTimer timer(stats_.cpu_ns);
+  p2::stage::Scope stage_scope(p2::stage::kSwap);
   impl_->Swap(presenter, frontbuffer, width, height);
 }
 

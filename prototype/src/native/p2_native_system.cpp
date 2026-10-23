@@ -22,6 +22,7 @@
 #include "p2_native_system.h"
 #include "../guest_pacing_stats.h"
 #include "native_renderer.h"
+#include "stage_timer.h"
 
 #include <algorithm>
 #include <atomic>
@@ -366,7 +367,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     if (index < kRegisterCount && registers_[index] != value) {
       const uint32_t old_value = registers_[index];
       registers_[index] = value;
-      renderer_.RegisterWritten(index, old_value, value);
+      { p2::stage::Scope stage_reg(p2::stage::kRegisters); renderer_.RegisterWritten(index, old_value, value); }
     }
   }
 
@@ -409,7 +410,23 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
   }
 
+  // The fast path for the registers the draws write (0x1928 and up): no special case lives there,
+  // so a changed value only needs the store and the renderer's bookkeeping. Measured with
+  // proto_stage_timer: 25,280 register writes per slow frame, 6.3 ms of the ring thread.
+  // The special cases below 0x1928 (gamma ramp, scratch writeback, COHER_STATUS_HOST) keep the
+  // full path in WriteRegisterSlow.
   void WriteRegister(uint32_t index, uint32_t value) {
+    if (index >= 0x1928 && index < kRegisterCount) [[likely]] {
+      const uint32_t old_value = registers_[index];
+      if (old_value == value) return;
+      registers_[index] = value;
+      renderer_.RegisterWritten(index, old_value, value);
+      return;
+    }
+    WriteRegisterSlow(index, value);
+  }
+
+  void WriteRegisterSlow(uint32_t index, uint32_t value) {
     if (index >= kRegisterCount) {
       return;
     }
@@ -421,7 +438,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     if (registers_[index] != value) {
       const uint32_t old_value = registers_[index];
       registers_[index] = value;
-      renderer_.RegisterWritten(index, old_value, value);
+      { p2::stage::Scope stage_reg(p2::stage::kRegisters); renderer_.RegisterWritten(index, old_value, value); }
     }
     switch (index) {
       case rex::graphics::XE_GPU_REG_DC_LUT_RW_INDEX:
@@ -552,6 +569,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     uint32_t read = 0;
     uint32_t generation = 0;
     auto last_report = Clock::now();
+    p2::stage::StageTimerInit();
     while (running_.load(std::memory_order_acquire)) {
       {
         if (renderer_ready_) {
@@ -597,6 +615,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
       reader.mask = words - 1;
       reader.pos = read;
       reader.end = written;
+      p2::stage::Scope stage_packets(p2::stage::kPackets);
       while (reader.Pending()) {
         if (renderer_ready_ && (packets_ & 63u)==0) renderer_.PollOcclusionQueries();
         if (!Packet(reader, 0)) {
@@ -771,6 +790,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
     switch (packet >> 30) {
       case 0: {
+        p2::stage::Scope stage_reg0(p2::stage::kPktType0);
         const uint32_t index = packet & 0x7FFF;
         const bool one_register = (packet >> 15) & 0x1;
         if (one_register) {
@@ -783,6 +803,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case 1: {
+        p2::stage::Scope stage_reg1(p2::stage::kPktType0);
         const uint32_t value1 = data.Read();
         const uint32_t value2 = data.Read();
         WriteRegister(packet & 0x7FF, value1);
@@ -834,9 +855,17 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         Present();
         swap_interrupt_pending_ = true;
         ReportSlowFrame();
+        {
+          static auto stage_last = Clock::now();
+          const auto stage_now = Clock::now();
+          p2::stage::StageTimerFrame(
+              double(std::chrono::duration_cast<std::chrono::microseconds>(stage_now - stage_last).count()) / 1000.0);
+          stage_last = stage_now;
+        }
         break;
       case xenos::PM4_INDIRECT_BUFFER:
       case xenos::PM4_INDIRECT_BUFFER_PFD: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktIndirect);
         if (words < 2) break;
         const uint32_t address = data.Read() & 0x1FFFFFFF;
         const uint32_t length = data.Read() & 0xFFFFF;
@@ -846,6 +875,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_WAIT_REG_MEM: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktWaitMem);
         p2::gpuwait::Scope gpu_wait_total(p2::gpuwait::WaitMem);
         if (words < 5) break;
         const uint32_t info = data.Read();
@@ -900,6 +930,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_REG_RMW: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktMem);
         if (words < 3) break;
         const uint32_t info = data.Read();
         const uint32_t and_value = data.Read();
@@ -911,6 +942,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_REG_TO_MEM: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktMem);
         if (words < 2) break;
         const uint32_t reg = data.Read();
         const uint32_t address = data.Read();
@@ -918,6 +950,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_MEM_WRITE: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktMem);
         if (words < 1) break;
         uint32_t address = data.Read();
         for (uint32_t i = 1; i < words; ++i) {
@@ -927,6 +960,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_COND_WRITE: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktMem);
         if (words < 6) break;
         const uint32_t info = data.Read();
         const uint32_t poll = data.Read();
@@ -949,6 +983,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         WriteRegister(rex::graphics::XE_GPU_REG_VGT_EVENT_INITIATOR, data.Read() & 0x3F);
         break;
       case xenos::PM4_EVENT_WRITE_SHD: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktEvent);
         if (words < 3) break;
         const uint32_t initiator = data.Read();
         const uint32_t address = data.Read();
@@ -959,6 +994,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_EVENT_WRITE_EXT: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktEvent);
         if (words < 2) break;
         const uint32_t initiator = data.Read();
         const uint32_t address = data.Read();
@@ -972,6 +1008,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_EVENT_WRITE_ZPD: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktEvent);
         if (words < 1) break;
         WriteRegister(rex::graphics::XE_GPU_REG_VGT_EVENT_INITIATOR, data.Read() & 0x3F);
         const uint32_t address = Register(rex::graphics::XE_GPU_REG_RB_SAMPLE_COUNT_ADDR);
@@ -981,6 +1018,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_SET_CONSTANT: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktSetConst);
         if (words < 1) break;
         const uint32_t type_index = data.Read();
         const uint32_t base = ConstantBase(type_index);
@@ -992,6 +1030,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
       }
       case xenos::PM4_SET_CONSTANT2:
       case xenos::PM4_SET_SHADER_CONSTANTS: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktSetConst);
         // Same format: the first value is the register index, the rest are
         // written consecutively.
         if (words < 1) break;
@@ -1000,6 +1039,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_LOAD_ALU_CONSTANT: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktSetConst);
         // Registers loaded from guest memory instead of from the ring.
         if (words < 3) break;
         const uint32_t address = data.Read() & 0x3FFFFFFF;
@@ -1046,6 +1086,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_VIZ_QUERY: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktEvent);
         // Like the emulation: when the query ends it is reported visible, in
         // case the game reads the result.
         if (words < 1) break;
@@ -1106,6 +1147,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_IM_LOAD: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktImLoad);
         // The shader microcode from guest memory (CommandProcessor::
         // ExecutePacketType3_IM_LOAD).
         if (words < 2) break;
@@ -1121,6 +1163,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_IM_LOAD_IMMEDIATE: {
+        p2::stage::Scope stage_pkt(p2::stage::kPktImLoad);
         // The microcode is in the packet, which may wrap around the ring.
         if (words < 2) break;
         const uint32_t type = data.Read();

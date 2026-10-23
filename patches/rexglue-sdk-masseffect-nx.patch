@@ -72,6 +72,18 @@ index 0000000..4427f70
 +void OnShaders(bool memexport_vertex, bool memexport_pixel);
 +
 +}  // namespace rex::graphics::edram_census
+diff --git a/sdk/include/rex/graphics/flags.h b/sdk/include/rex/graphics/flags.h
+index 2cf24c4..9415d71 100644
+--- a/sdk/include/rex/graphics/flags.h
++++ b/sdk/include/rex/graphics/flags.h
+@@ -15,6 +15,7 @@
+ 
+ // GPU Core
+ REXCVAR_DECLARE(bool, vsync);
++REXCVAR_DECLARE(double, gpu_stacked_layer_bias);
+ REXCVAR_DECLARE(bool, clear_memory_page_state);
+ REXCVAR_DECLARE(bool, half_pixel_offset);
+ REXCVAR_DECLARE(bool, async_shader_compilation);
 diff --git a/sdk/include/rex/graphics/pipeline/shader/spirv_builder.h b/sdk/include/rex/graphics/pipeline/shader/spirv_builder.h
 index dbd6b01..d72a31a 100644
 --- a/sdk/include/rex/graphics/pipeline/shader/spirv_builder.h
@@ -100,7 +112,7 @@ index dbd6b01..d72a31a 100644
  
  }  // namespace rex::graphics
 diff --git a/sdk/include/rex/graphics/pipeline/shader/spirv_translator.h b/sdk/include/rex/graphics/pipeline/shader/spirv_translator.h
-index 72cb03a..53d80d6 100644
+index 72cb03a..a54a8ea 100644
 --- a/sdk/include/rex/graphics/pipeline/shader/spirv_translator.h
 +++ b/sdk/include/rex/graphics/pipeline/shader/spirv_translator.h
 @@ -33,7 +33,12 @@ class SpirvShaderTranslator : public ShaderTranslator {
@@ -117,10 +129,29 @@ index 72cb03a..53d80d6 100644
  
      enum class DepthStencilMode : uint32_t {
        kNoModifiers,
-@@ -411,6 +416,17 @@ class SpirvShaderTranslator : public ShaderTranslator {
+@@ -223,6 +228,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
+     uint32_t vertex_index_reset;
+     // Number of guest vertices processed by the memexport compute dispatch.
+     uint32_t compute_memexport_vertex_count;
++    // Guest dword the shared memory buffer starts at, subtracted from every memexport
++    // address before it is stored. Zero when the buffer maps the guest memory from its
++    // start (Xenia, Mass Effect); non-zero lets a renderer bind a buffer that only covers
++    // the range the game actually exports to (Prototype 1/2, SHD: ~27 MB instead of 512).
++    uint32_t memexport_base_dwords;
+     float user_clip_planes[6][4];
+ 
+     float ndc_scale[3];
+@@ -411,6 +421,24 @@ class SpirvShaderTranslator : public ShaderTranslator {
          draw_resolution_scale_x_(draw_resolution_scale_x ? draw_resolution_scale_x : 1),
          draw_resolution_scale_y_(draw_resolution_scale_y ? draw_resolution_scale_y : 1) {}
  
++  // Memexport stores subtract SystemConstants::memexport_base_dwords from the guest
++  // address, so the bound shared memory buffer may cover only the exported range instead
++  // of the whole 512 MB guest space. Off by default: Mass Effect and Xenia map the guest
++  // memory from its start, where the base is always zero. Prototype 1/2 and SHD bind a
++  // small buffer (~27 MB measured in SHD) and turn this on.
++  void SetMemExportBaseRelative(bool enabled) { memexport_base_relative_ = enabled; }
++
 +  // project8 SDK0015, native caller opt-in; SDK FSI retains the universal path.
 +  void SetTextureSignSpecializationEnabled(bool enabled) {
 +    texture_sign_specialization_enabled_ = enabled;
@@ -135,7 +166,7 @@ index 72cb03a..53d80d6 100644
    uint64_t GetDefaultVertexShaderModification(
        uint32_t dynamic_addressable_register_count,
        Shader::HostVertexShaderType host_vertex_shader_type =
-@@ -709,7 +725,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
+@@ -709,7 +737,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
    // 2x2 quads.
    bool FSI_IsDepthStencilEarly() const {
      assert_true(edram_fragment_shader_interlock_);
@@ -146,7 +177,7 @@ index 72cb03a..53d80d6 100644
             !current_shader().memexport_eM_written();
    }
    void FSI_LoadSampleMask(spv::Id msaa_samples);
-@@ -765,6 +783,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
+@@ -765,6 +795,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
  
    std::unique_ptr<SpirvBuilder> builder_;
  
@@ -160,17 +191,26 @@ index 72cb03a..53d80d6 100644
    std::vector<spv::Id> id_vector_temp_;
    // For helper functions like operand loading, so they don't conflict with
    // id_vector_temp_ usage in bigger callbacks.
-@@ -881,6 +906,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
+@@ -848,6 +885,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
+     kSystemConstantVertexBaseIndex,
+     kSystemConstantVertexIndexReset,
+     kSystemConstantComputeMemExportVertexCount,
++    kSystemConstantMemExportBaseDwords,
+     kSystemConstantUserClipPlanes,
+     kSystemConstantVertexIndexMin,
+     kSystemConstantVertexIndexMax,
+@@ -881,6 +919,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
      kSystemConstantEdramBlendConstant,
    };
    spv::Id uniform_system_constants_;
 +  bool texture_sign_specialization_enabled_ = false;
++  bool memexport_base_relative_ = false;
 +  // SpecId 0..7, four complete 8-bit fetch signs per word (including gamma).
 +  spv::Id texture_swizzled_signs_spec_constants_[8];
    spv::Id uniform_float_constants_;
    spv::Id uniform_bool_loop_constants_;
    spv::Id uniform_fetch_constants_;
-@@ -1054,6 +1082,19 @@ class SpirvShaderTranslator : public ShaderTranslator {
+@@ -1054,6 +1096,19 @@ class SpirvShaderTranslator : public ShaderTranslator {
    // main_loop_merge_.
    spv::Block* main_loop_exit_;
    spv::Id main_loop_pc_next_;
@@ -1256,6 +1296,21 @@ index 0000000..991d3a0
 +}
 +
 +}  // namespace rex::graphics::edram_census
+diff --git a/sdk/src/graphics/flags.cpp b/sdk/src/graphics/flags.cpp
+index e2983a4..d0a7164 100644
+--- a/sdk/src/graphics/flags.cpp
++++ b/sdk/src/graphics/flags.cpp
+@@ -25,6 +25,10 @@ REXCVAR_DEFINE_BOOL(gamma_render_target_as_unorm16, true, "GPU",
+                     "Use R16G16B16A16_UNORM for gamma render targets (more accurate than sRGB)")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ REXCVAR_DEFINE_STRING(dump_shaders, "", "GPU", "Path to dump shaders to");
++REXCVAR_DEFINE_DOUBLE(gpu_stacked_layer_bias, 0.0, "GPU",
++                      "Added to the layer coordinate of stacked (2D array) texture fetches, in layers. "
++                      "0 = as translated. Diagnostic (SHD colour grading LUT)")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+ REXCVAR_DEFINE_BOOL(use_fuzzy_alpha_epsilon, false, "GPU",
+                     "Use approximate compare for alpha test values to prevent "
+                     "flickering on NVIDIA graphics cards");
 diff --git a/sdk/src/graphics/pipeline/render_target/cache.cpp b/sdk/src/graphics/pipeline/render_target/cache.cpp
 index 953c5fd..d000a15 100644
 --- a/sdk/src/graphics/pipeline/render_target/cache.cpp
@@ -1281,6 +1336,32 @@ index 953c5fd..d000a15 100644
    // From now on ownership transfers should succeed for simplicity and
    // consistency, even if they fail in the implementation (just ignore that and
    // draw with whatever contents currently are in the render target in this
+diff --git a/sdk/src/graphics/pipeline/shader/interpreter.cpp b/sdk/src/graphics/pipeline/shader/interpreter.cpp
+index cc726b7..86fa606 100644
+--- a/sdk/src/graphics/pipeline/shader/interpreter.cpp
++++ b/sdk/src/graphics/pipeline/shader/interpreter.cpp
+@@ -967,7 +967,7 @@ void ShaderInterpreter::ExecuteVertexFetchInstruction(ucode::VertexFetchInstruct
+     }
+ 
+     uint32_t packed_components = 0b0000;
+-    uint32_t packed_widths[4], packed_offsets[4];
++    uint32_t packed_widths[4] = {}, packed_offsets[4] = {};
+     uint32_t packed_dwords[] = {data[0], data[0]};
+     switch (instr.data_format()) {
+       case xenos::VertexFormat::k_8_8_8_8: {
+@@ -1107,7 +1107,11 @@ void ShaderInterpreter::ExecuteVertexFetchInstruction(ucode::VertexFetchInstruct
+             continue;
+           }
+           uint32_t packed_width = packed_widths[i];
+-          result[i] = float(packed_dwords[i >> 1] & ((UINT32_C(1) << packed_widths[i]) - 1));
++          // Shift the component down first (the signed path does it); without the shift the
++          // upper half of k_16_16 / k_16_16_16_16 and the upper fields of the packed formats
++          // read as a copy of the lowest one (SHD: memexported texture moves wrote half garbage).
++          result[i] = float((packed_dwords[i >> 1] >> packed_offsets[i]) &
++                            ((UINT32_C(1) << packed_widths[i]) - 1));
+         }
+         if (instr.is_normalized()) {
+           for (uint32_t i = 0; i < 4; ++i) {
 diff --git a/sdk/src/graphics/pipeline/shader/spirv_builder.cpp b/sdk/src/graphics/pipeline/shader/spirv_builder.cpp
 index fe0aa4e..80aaabb 100644
 --- a/sdk/src/graphics/pipeline/shader/spirv_builder.cpp
@@ -1303,7 +1384,7 @@ index fe0aa4e..80aaabb 100644
  }
  
 diff --git a/sdk/src/graphics/pipeline/shader/spirv_translator.cpp b/sdk/src/graphics/pipeline/shader/spirv_translator.cpp
-index 38fc7d1..a74fc21 100644
+index 38fc7d1..1f53d59 100644
 --- a/sdk/src/graphics/pipeline/shader/spirv_translator.cpp
 +++ b/sdk/src/graphics/pipeline/shader/spirv_translator.cpp
 @@ -21,11 +21,18 @@
@@ -1346,7 +1427,15 @@ index 38fc7d1..a74fc21 100644
  
    builder_->addCapability(IsSpirvTessEvalShader() ? spv::CapabilityTessellation
                                                    : spv::CapabilityShader);
-@@ -499,10 +510,10 @@ void SpirvShaderTranslator::StartTranslation() {
+@@ -267,6 +278,7 @@ void SpirvShaderTranslator::StartTranslation() {
+       {"vertex_index_reset", offsetof(SystemConstants, vertex_index_reset), type_uint_},
+       {"compute_memexport_vertex_count", offsetof(SystemConstants, compute_memexport_vertex_count),
+        type_uint_},
++      {"memexport_base_dwords", offsetof(SystemConstants, memexport_base_dwords), type_uint_},
+       {"user_clip_planes", offsetof(SystemConstants, user_clip_planes), type_float4_array_6},
+       {"vertex_index_min", offsetof(SystemConstants, vertex_index_min), type_uint_},
+       {"vertex_index_max", offsetof(SystemConstants, vertex_index_max), type_uint_},
+@@ -499,10 +511,10 @@ void SpirvShaderTranslator::StartTranslation() {
      var_main_vfetch_address_ =
          builder_->createVariable(spv::NoPrecision, spv::StorageClassFunction, type_int_,
                                   "xe_var_vfetch_address", const_int_0_);
@@ -1358,7 +1447,7 @@ index 38fc7d1..a74fc21 100644
          builder_->createVariable(spv::NoPrecision, spv::StorageClassFunction, type_float_,
                                   "xe_var_tfetch_lod", const_float_0_);
      var_main_tfetch_gradients_h_ =
-@@ -608,7 +619,10 @@ void SpirvShaderTranslator::StartTranslation() {
+@@ -608,7 +620,10 @@ void SpirvShaderTranslator::StartTranslation() {
  
    // If no jumps, don't create a switch, but still create a loop so exece can
    // break.
@@ -1370,7 +1459,7 @@ index 38fc7d1..a74fc21 100644
  
    // Main loop header - based on whether it's the first iteration (entered from
    // the function or from the continuation), choose the program counter.
-@@ -660,7 +674,11 @@ std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
+@@ -660,7 +675,11 @@ std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
    if (!is_depth_only_fragment_shader_) {
      // Close flow control within the last switch case.
      CloseExecConditionals();
@@ -1383,7 +1472,7 @@ index 38fc7d1..a74fc21 100644
      // After the final exec (if it happened to be not exece, which would already
      // have a break branch), break from the switch if it exists, or from the
      // loop it doesn't.
-@@ -1294,6 +1312,12 @@ void SpirvShaderTranslator::PostTranslation() {
+@@ -1294,6 +1313,12 @@ void SpirvShaderTranslator::PostTranslation() {
  }
  
  void SpirvShaderTranslator::ProcessLabel(uint32_t cf_index) {
@@ -1396,7 +1485,7 @@ index 38fc7d1..a74fc21 100644
    if (cf_index == 0) {
      // 0 already added in the beginning.
      return;
-@@ -1329,8 +1353,7 @@ void SpirvShaderTranslator::ProcessExecInstructionEnd(const ParsedExecInstructio
+@@ -1329,8 +1354,7 @@ void SpirvShaderTranslator::ProcessExecInstructionEnd(const ParsedExecInstructio
      // Break out of the main switch (if exists) and the main loop.
      CloseInstructionPredication();
      if (!builder_->getBuildPoint()->isTerminated()) {
@@ -1406,7 +1495,7 @@ index 38fc7d1..a74fc21 100644
      }
    }
    UpdateExecConditionals(instr.type, instr.bool_constant_index, instr.condition);
-@@ -1543,7 +1566,117 @@ void SpirvShaderTranslator::ProcessLoopEndInstruction(const ParsedLoopEndInstruc
+@@ -1543,7 +1567,117 @@ void SpirvShaderTranslator::ProcessLoopEndInstruction(const ParsedLoopEndInstruc
    // Now going to fall through to the next control flow instruction.
  }
  
@@ -1524,6 +1613,30 @@ index 38fc7d1..a74fc21 100644
    // Treat like exec, merge with execs if possible, since it's an if too.
    ParsedExecInstruction::Type type;
    if (instr.type == ParsedJumpInstruction::Type::kConditional) {
+@@ -4130,6 +4264,23 @@ void SpirvShaderTranslator::StoreUint32ToSharedMemory(spv::Id value, spv::Id add
+     value = builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, value, replace_mask);
+   }
+ 
++  // The buffer need not map the guest memory from its start: a renderer may bind one that
++  // only covers the exported range (memexport_base_dwords, zero for a full mapping). The
++  // base is subtracted here, in the single place every memexport store goes through.
++  if (memexport_base_relative_) {
++    id_vector_temp_util_.clear();
++    id_vector_temp_util_.push_back(builder_->makeIntConstant(kSystemConstantMemExportBaseDwords));
++    spv::Id base_dwords = builder_->createLoad(
++        builder_->createAccessChain(spv::StorageClassUniform, uniform_system_constants_,
++                                    id_vector_temp_util_),
++        spv::NoPrecision);
++    address_dwords_int = builder_->createUnaryOp(
++        spv::OpBitcast, type_int_,
++        builder_->createBinOp(spv::OpISub, type_uint_,
++                              builder_->createUnaryOp(spv::OpBitcast, type_uint_, address_dwords_int),
++                              base_dwords));
++  }
++
+   auto store = [&](spv::Id pointer) {
+     if (replace_mask != spv::NoResult) {
+       // Don't touch the other bits in the buffer, just modify the needed bits
 diff --git a/sdk/src/graphics/pipeline/shader/spirv_translator_alu.cpp b/sdk/src/graphics/pipeline/shader/spirv_translator_alu.cpp
 index 706ac7e..520878d 100644
 --- a/sdk/src/graphics/pipeline/shader/spirv_translator_alu.cpp
@@ -1702,10 +1815,31 @@ index 706ac7e..520878d 100644
  
    // Floating-point arithmetic operations (addition, subtraction, negation,
 diff --git a/sdk/src/graphics/pipeline/shader/spirv_translator_fetch.cpp b/sdk/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
-index 46d01a9..b5cfafb 100644
+index 46d01a9..a2f3753 100644
 --- a/sdk/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
 +++ b/sdk/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
-@@ -1303,17 +1303,27 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+@@ -19,6 +19,7 @@
+ #include <fmt/format.h>
+ 
+ #include <rex/assert.h>
++#include <rex/graphics/flags.h>
+ #include <rex/graphics/pipeline/shader/spirv_translator.h>
+ #include <rex/math.h>
+ 
+@@ -1168,6 +1169,12 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+             z_stacked =
+                 builder_->createNoContractionBinOp(spv::OpFAdd, type_float_, z_stacked, z_offset);
+           }
++          // gpu_stacked_layer_bias: a constant added to the stacked layer coordinate (in layers).
++          // Diagnostic for SHD's 16-slice colour grading LUT, which measured one layer high.
++          if (const float layer_bias = float(REXCVAR_GET(gpu_stacked_layer_bias))) {
++            z_stacked = builder_->createNoContractionBinOp(spv::OpFAdd, type_float_, z_stacked,
++                                                           builder_->makeFloatConstant(layer_bias));
++          }
+           builder_->createBranch(&block_dimension_merge);
+           // Select one of the two.
+           builder_->setBuildPoint(&block_dimension_merge);
+@@ -1303,17 +1310,27 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
          }
        }
  
@@ -74104,6 +74238,55 @@ index 57fd161..388d851 100644
    int32_t prev_priority = 0;
    auto thread = XObject::GetNativeObject<XThread>(REX_KERNEL_STATE(), thread_ptr);
  
+diff --git a/sdk/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/sdk/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+index 1254710..8cb82fd 100644
+--- a/sdk/src/kernel/xboxkrnl/xboxkrnl_video.cpp
++++ b/sdk/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+@@ -29,7 +29,12 @@
+ #include <rex/types.h>
+ #include <rex/runtime.h>
+ #include <rex/system/export_resolver.h>
++#include <rex/system/guest_stack_sampler.h>
++
++extern "C" void ProtoFuncTimerFrame(uint64_t frame) __attribute__((weak));
+ #include <rex/system/kernel_state.h>
++#include <rex/system/thread_state.h>
++#include <rex/system/xthread.h>
+ #include <rex/system/xtypes.h>
+ #include <rex/ui/flags.h>
+ 
+@@ -445,6 +450,19 @@ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
+                   mapped_u32 frontbuffer_ptr,  // ptr to frontbuffer address
+                   mapped_u32 texture_format_ptr, mapped_u32 color_space_ptr, mapped_u32 width,
+                   mapped_u32 height) {
++  // Off unless p2_stack_sample is set: samples the caller's stack once per frame.
++  {
++    auto* ppc = rex::runtime::current_ppc_context();
++    auto* thread = rex::system::XThread::GetCurrentThread();
++    if (ppc && thread) {
++      auto guest_thread = thread->guest_object<X_KTHREAD>();
++      rex::system::GuestStackSampleFrame(REX_KERNEL_MEMORY()->virtual_membase(), ppc->r1.u32,
++                                         guest_thread->stack_limit, guest_thread->stack_base);
++      // Weak: defined only in the timing build (prototype's proto_func_timer.cpp).
++      static uint64_t frame_counter = 0;
++      if (ProtoFuncTimerFrame) ProtoFuncTimerFrame(++frame_counter);
++    }
++  }
+   // All of these parameters are REQUIRED.
+   assert(buffer_ptr);
+   assert(fetch_ptr);
+diff --git a/sdk/src/system/CMakeLists.txt b/sdk/src/system/CMakeLists.txt
+index 8f5388d..9366284 100644
+--- a/sdk/src/system/CMakeLists.txt
++++ b/sdk/src/system/CMakeLists.txt
+@@ -21,6 +21,7 @@ set(REXSYSTEM_SOURCES
+     xobject.cpp
+     xmodule.cpp
+     guest_path.cpp
++    guest_stack_sampler.cpp
+ 
+     # Utilities
+     util/object_table.cpp
 diff --git a/sdk/src/system/function_dispatcher.cpp b/sdk/src/system/function_dispatcher.cpp
 index bd43109..0930dad 100644
 --- a/sdk/src/system/function_dispatcher.cpp
@@ -74144,20 +74327,19 @@ index bd43109..0930dad 100644
              ctx.last_indirect_target);
  }
 diff --git a/sdk/src/system/xfile.cpp b/sdk/src/system/xfile.cpp
-index 49e374a..3e3f728 100644
+index 49e374a..34cb4ea 100644
 --- a/sdk/src/system/xfile.cpp
 +++ b/sdk/src/system/xfile.cpp
-@@ -20,6 +20,9 @@
+@@ -20,6 +20,8 @@
  #include <rex/thread/mutex.h>
  
  #include <span>
 +#include <cstring>
 +#include <rex/system/thread_state.h>
-+namespace { uint32_t guest_lr_() { auto* ts = rex::runtime::ThreadState::Get(); if (!ts) return 0; auto* c = ts->context(); return c ? uint32_t(c->lr) : 0; } uint32_t guest_chain_(int k) { auto* ts = rex::runtime::ThreadState::Get(); if (!ts) return 0; auto* c = ts->context(); auto* ks = rex::system::kernel_state(); if (!c || !ks) return 0; uint8_t* vb = ks->memory()->virtual_membase(); uint32_t fp = c->r1.u32; uint32_t lo = 0, hi = 0; if (c->r13.u32 >= 0x10000u) { uint32_t b, e; std::memcpy(&b, vb + c->r13.u32 + 0x70, 4); std::memcpy(&e, vb + c->r13.u32 + 0x74, 4); hi = __builtin_bswap32(b); lo = __builtin_bswap32(e); } for (int i = 0; i <= k; ++i) { if (!lo || fp < lo || fp + 4 > hi) return 0; uint32_t n; std::memcpy(&n, vb + fp, 4); n = __builtin_bswap32(n); if (n <= fp || n > hi) return 0; if (i == k) { uint32_t r; std::memcpy(&r, vb + n - 8, 4); return __builtin_bswap32(r); } fp = n; } return 0; } }
  
  namespace rex::system {
  
-@@ -105,8 +108,13 @@ X_STATUS XFile::QueryDirectory(X_FILE_DIRECTORY_INFORMATION* out_info, size_t le
+@@ -105,8 +107,9 @@ X_STATUS XFile::QueryDirectory(X_FILE_DIRECTORY_INFORMATION* out_info, size_t le
  X_STATUS XFile::Read(uint32_t buffer_guest_address, uint32_t buffer_length, uint64_t byte_offset,
                       uint32_t* out_bytes_read, uint32_t apc_context, bool notify_completion) {
    std::lock_guard<std::mutex> lock(file_lock_);
@@ -74165,25 +74347,11 @@ index 49e374a..3e3f728 100644
 -                      notify_completion);
 +  const X_STATUS r = ReadInternal(buffer_guest_address, buffer_length, byte_offset, out_bytes_read, apc_context,
 +                                  notify_completion);
-+  if (name().find(".bin") != std::string::npos && name().find(".rcf") == std::string::npos) {
-+    REXSYS_INFO("[save-io] read {} bytes at {} from '{}' -> {:08X}, got {} (size {}) lr {:08X} {:08X} {:08X} {:08X}", buffer_length,
-+                int64_t(byte_offset), path(), r, out_bytes_read ? *out_bytes_read : 0, entry()->size(), guest_lr_(), guest_chain_(0), guest_chain_(1), guest_chain_(2));
-+  }
 +  return r;
  }
  
  X_STATUS XFile::ReadInternal(uint32_t buffer_guest_address, uint32_t buffer_length,
-@@ -262,12 +270,25 @@ X_STATUS XFile::Write(uint32_t buffer_guest_address, uint32_t buffer_length, uin
-     byte_offset = position_;
-   }
- 
-+  if (name().find(".bin") != std::string::npos) {
-+    REXSYS_INFO("[save-io] write {} bytes at {} to '{}' (size before {}) lr {:08X} {:08X} {:08X} {:08X}", buffer_length,
-+                int64_t(byte_offset), path(), entry()->size(), guest_lr_(), guest_chain_(0), guest_chain_(1), guest_chain_(2));
-+  }
-   size_t bytes_written = 0;
-   X_STATUS result = file_->WriteSync(
-       std::span<const uint8_t>(memory()->TranslateVirtual(buffer_guest_address), buffer_length),
+@@ -268,6 +271,15 @@ X_STATUS XFile::Write(uint32_t buffer_guest_address, uint32_t buffer_length, uin
        size_t(byte_offset), &bytes_written);
    if (XSUCCEEDED(result)) {
      position_ += bytes_written;
@@ -74199,12 +74367,11 @@ index 49e374a..3e3f728 100644
    }
  
    XIOCompletion::IONotification notify;
-@@ -286,8 +307,13 @@ X_STATUS XFile::Write(uint32_t buffer_guest_address, uint32_t buffer_length, uin
+@@ -286,8 +298,11 @@ X_STATUS XFile::Write(uint32_t buffer_guest_address, uint32_t buffer_length, uin
  }
  
  X_STATUS XFile::SetLength(size_t length) {
-+  REXSYS_INFO("[save-io] set length {} on '{}' lr {:08X} {:08X} {:08X} {:08X}", length, path(), guest_lr_(), guest_chain_(0), guest_chain_(1), guest_chain_(2));
-   std::lock_guard<std::mutex> lock(file_lock_);
+-  std::lock_guard<std::mutex> lock(file_lock_);
 -  return file_->SetLength(length);
 +  const X_STATUS r = file_->SetLength(length);
 +  if (XSUCCEEDED(r)) {
@@ -74215,10 +74382,10 @@ index 49e374a..3e3f728 100644
  
  X_STATUS XFile::Rename(const std::filesystem::path& file_path) {
 diff --git a/sdk/src/system/xobject.cpp b/sdk/src/system/xobject.cpp
-index 71d9286..10d8942 100644
+index 71d9286..2a26ad6 100644
 --- a/sdk/src/system/xobject.cpp
 +++ b/sdk/src/system/xobject.cpp
-@@ -28,6 +28,66 @@
+@@ -28,6 +28,69 @@
  #include <rex/system/xthread.h>
  
  #include "global_lock_spin.h"
@@ -74234,6 +74401,7 @@ index 71d9286..10d8942 100644
 +  uint32_t chain[8]{};
 +};
 +Entry g_entries[128];
++std::atomic<int> g_enabled{0};
 +static Entry* Slot(uint32_t tid) {
 +  for (auto& e : g_entries) {
 +    uint32_t cur = e.tid.load(std::memory_order_relaxed);
@@ -74246,6 +74414,8 @@ index 71d9286..10d8942 100644
 +  return nullptr;
 +}
 +}  // namespace rex::system::waitreg
++
++extern "C" void RexWaitRegistryEnable(int on) { rex::system::waitreg::g_enabled.store(on ? 1 : 0, std::memory_order_relaxed); }
 +
 +extern "C" void RexWaitRegistryDump(FILE* f) {
 +  using namespace rex::system::waitreg;
@@ -74285,12 +74455,15 @@ index 71d9286..10d8942 100644
  
  namespace rex::system {
  
-@@ -215,7 +275,45 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
+@@ -215,7 +278,48 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
                                  : std::chrono::milliseconds::max();
  
    XThread::CheckTitleTermination();
++  // Diagnostics only: this walks the guest stack on every wait. Off unless the title asks for it
++  // (RexWaitRegistryEnable), see ХОД_РАБОТЫ.md (hang analysis).
 +  waitreg::Entry* reg = nullptr;
-+  if (XThread* self = XThread::IsInThread() ? XThread::GetCurrentThread() : nullptr) {
++  if (XThread* self = (waitreg::g_enabled.load(std::memory_order_relaxed) && XThread::IsInThread())
++                          ? XThread::GetCurrentThread() : nullptr) {
 +    reg = waitreg::Slot(self->thread_id());
 +    if (reg) {
 +      const PPCContext* c = self->thread_state() ? self->thread_state()->context() : nullptr;
@@ -75231,3 +75404,243 @@ index 4f79067..d3623e8 100644
    auto remaining = rex::cvar::Init(argc, argv);
    rex::cvar::ApplyEnvironment();
    rex::InitLoggingEarly();
+diff --git a/include/rex/system/guest_stack_sampler.h b/include/rex/system/guest_stack_sampler.h
+new file mode 100644
+index 0000000..8fec26d
+--- /dev/null
++++ b/include/rex/system/guest_stack_sampler.h
+@@ -0,0 +1,16 @@
++// Stack sampler for the guest thread that presents frames (VdSwap).
++// Off by default. With p2_stack_sample = true, once per frame (at most every
++// p2_stack_sample_ms) it reads the guest stack pointer r1 and appends the words above it
++// that point into guest code to sdmc:/switch/prototype-nx/logs/stack_samples.txt.
++// Map the addresses to sub_XXXXXXXX names from the generated code.
++#pragma once
++
++#include <cstdint>
++
++namespace rex::system {
++
++// Called from VdSwap_entry on the guest thread. guest_base is the host base of guest memory.
++void GuestStackSampleFrame(const uint8_t* guest_base, uint32_t r1, uint32_t stack_low,
++                           uint32_t stack_high);
++
++}  // namespace rex::system
+diff --git a/src/system/guest_stack_sampler.cpp b/src/system/guest_stack_sampler.cpp
+new file mode 100644
+index 0000000..d12733d
+--- /dev/null
++++ b/src/system/guest_stack_sampler.cpp
+@@ -0,0 +1,190 @@
++#include "rex/system/guest_stack_sampler.h"
++
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstring>
++#include <mutex>
++#include <string>
++#include <rex/thread.h>
++#include <vector>
++
++#include <rex/cvar.h>
++#include <rex/system/kernel_state.h>
++#include <rex/system/thread_state.h>
++#include <rex/system/xthread.h>
++
++REXCVAR_DEFINE_BOOL(p2_stack_sample, false, "Prototype2",
++                    "Write guest call-stack samples to logs/stack_samples.txt once per frame. "
++                    "For finding slow code; leave off for normal play.");
++REXCVAR_DEFINE_UINT32(p2_stack_sample_ms, 10, "Prototype2",
++                      "Minimum milliseconds between two stack samples.");
++REXCVAR_DEFINE_BOOL(p2_thread_sample, false, "Prototype2",
++                    "Diagnostic: every p2_thread_sample_ms a host thread samples the stacks of all guest "
++                    "threads and writes the samples of frames longer than p2_thread_sample_slow_ms (and "
++                    "every 30th normal frame) to logs/thread_samples.txt. Restart required");
++REXCVAR_DEFINE_UINT32(p2_thread_sample_ms, 2, "Prototype2", "Milliseconds between two thread samples");
++REXCVAR_DEFINE_UINT32(p2_thread_sample_slow_ms, 50, "Prototype2",
++                      "Frames at least this long are written by p2_thread_sample");
++
++namespace rex::system {
++
++namespace {
++
++// Guest code range of default.xex. Words outside it are data.
++constexpr uint32_t kCodeLow = 0x82230000u;
++constexpr uint32_t kCodeHigh = 0x82BC0000u;
++// How far above r1 to look: the top of the stack, not the whole thing.
++constexpr uint32_t kWindow = 0x2000;
++constexpr int kMaxWords = 64;
++
++std::chrono::steady_clock::time_point g_last_sample{};
++FILE* g_file = nullptr;
++
++uint32_t ReadBE32(const uint8_t* base, uint32_t guest_addr) {
++  uint32_t raw = 0;
++  std::memcpy(&raw, base + guest_addr, sizeof(raw));
++  return __builtin_bswap32(raw);
++}
++
++// ---- all guest threads, buffered per frame ----
++struct Sample {
++  uint32_t thread;  // guest thread id
++  uint32_t r1;
++  uint8_t n;
++  uint32_t words[kMaxWords];
++};
++
++std::mutex g_mutex;
++std::vector<Sample> g_frame_samples;
++std::vector<std::pair<uint32_t, std::string>> g_names;  // thread id -> name, written once
++std::atomic<bool> g_thread_started{false};
++FILE* g_tfile = nullptr;
++uint64_t g_frame = 0;
++uint64_t g_last_frame_ns = 0;
++
++uint64_t NowNs() {
++  return std::chrono::duration_cast<std::chrono::nanoseconds>(
++             std::chrono::steady_clock::now().time_since_epoch())
++      .count();
++}
++
++void SampleAllThreads() {
++  auto* state = kernel_state();
++  if (!state) return;
++  const uint8_t* base = state->memory()->virtual_membase();
++  auto threads = state->object_table()->GetObjectsByType<XThread>();
++  std::vector<Sample> taken;
++  taken.reserve(threads.size());
++  for (auto& thread : threads) {
++    if (!thread || !thread->is_guest_thread() || !thread->is_running()) continue;
++    auto* ts = thread->thread_state();
++    if (!ts || !ts->context()) continue;
++    // A racy read of another thread's registers: r1 can be mid-update. Bounds are checked.
++    const uint32_t r1 = ts->context()->r1.u32;
++    auto* kthread = thread->guest_object<X_KTHREAD>();
++    if (!kthread) continue;
++    const uint32_t low = kthread->stack_limit, high = kthread->stack_base;
++    if (r1 < low || r1 >= high) continue;
++    Sample s{};
++    s.thread = thread->thread_id();
++    s.r1 = r1;
++    const uint32_t top = r1 + kWindow < high ? r1 + kWindow : high;
++    for (uint32_t addr = r1; addr + 4 <= top && s.n < kMaxWords; addr += 4) {
++      const uint32_t word = ReadBE32(base, addr);
++      if (word >= kCodeLow && word < kCodeHigh) s.words[s.n++] = word;
++    }
++    taken.push_back(s);
++  }
++  std::lock_guard<std::mutex> lock(g_mutex);
++  for (auto& s : taken) {
++    bool known = false;
++    for (auto& [id, name] : g_names) known |= id == s.thread;
++    if (!known) {
++      for (auto& thread : threads)
++        if (thread && thread->thread_id() == s.thread) {
++          g_names.emplace_back(s.thread, thread->name());
++          if (g_tfile) std::fprintf(g_tfile, "T %u %s\n", s.thread, thread->name().c_str());
++        }
++    }
++    g_frame_samples.push_back(s);
++  }
++}
++
++object_ref<XHostThread> g_sampler;  // a host XThread: std::thread is not available on the Switch
++
++int SamplerThread() {
++  for (;;) {
++    rex::thread::Sleep(std::chrono::milliseconds(REXCVAR_GET(p2_thread_sample_ms)));
++    SampleAllThreads();
++  }
++  return 0;
++}
++
++// Called once per frame (VdSwap): writes this frame's samples if it was slow.
++void ThreadSampleFrame() {
++  if (!REXCVAR_GET(p2_thread_sample)) return;
++  if (!g_thread_started.exchange(true)) {
++    g_tfile = std::fopen("sdmc:/switch/prototype-nx/logs/thread_samples.txt", "a");
++    if (g_tfile) {
++      static char buffer[128 * 1024];
++      std::setvbuf(g_tfile, buffer, _IOFBF, sizeof(buffer));
++      std::fprintf(g_tfile, "start\n");
++    }
++    g_sampler = object_ref<XHostThread>(new XHostThread(kernel_state(), 128 * 1024, 0, SamplerThread));
++    g_sampler->set_name("Thread Sampler");
++    g_sampler->Create();
++    g_last_frame_ns = NowNs();
++    return;
++  }
++  const uint64_t now = NowNs();
++  const double ms = double(now - g_last_frame_ns) / 1e6;
++  g_last_frame_ns = now;
++  ++g_frame;
++  std::lock_guard<std::mutex> lock(g_mutex);
++  const bool slow = ms >= double(REXCVAR_GET(p2_thread_sample_slow_ms));
++  if (g_tfile && (slow || g_frame % 30 == 0)) {
++    std::fprintf(g_tfile, "%s %llu %.1f %zu\n", slow ? "S" : "N",
++                 static_cast<unsigned long long>(g_frame), ms, g_frame_samples.size());
++    for (auto& s : g_frame_samples) {
++      std::fprintf(g_tfile, "%u", s.thread);
++      for (uint8_t i = 0; i < s.n; ++i) std::fprintf(g_tfile, " %08X", s.words[i]);
++      std::fprintf(g_tfile, "\n");
++    }
++    if (g_frame % 300 == 0) std::fflush(g_tfile);
++  }
++  g_frame_samples.clear();
++}
++
++}  // namespace
++
++void GuestStackSampleFrame(const uint8_t* guest_base, uint32_t r1, uint32_t stack_low,
++                           uint32_t stack_high) {
++  ThreadSampleFrame();
++  if (!REXCVAR_GET(p2_stack_sample) || !guest_base) return;
++
++  const auto now = std::chrono::steady_clock::now();
++  if (now - g_last_sample < std::chrono::milliseconds(REXCVAR_GET(p2_stack_sample_ms))) return;
++  g_last_sample = now;
++
++  if (!g_file) {
++    g_file = std::fopen("sdmc:/switch/prototype-nx/logs/stack_samples.txt", "a");
++    if (!g_file) return;
++  }
++
++  std::fprintf(g_file, "f");
++  if (r1 < stack_low || r1 >= stack_high) {
++    std::fprintf(g_file, " sp=%08X out-of-range\n", r1);
++    std::fflush(g_file);
++    return;
++  }
++  const uint32_t top = r1 + kWindow < stack_high ? r1 + kWindow : stack_high;
++  for (uint32_t addr = r1; addr + 4 <= top; addr += 4) {
++    const uint32_t word = ReadBE32(guest_base, addr);
++    if (word >= kCodeLow && word < kCodeHigh) std::fprintf(g_file, " %08X", word);
++  }
++  std::fprintf(g_file, "\n");
++  std::fflush(g_file);
++}
++
++}  // namespace rex::system
+diff --git a/src/system/guest_stack_sampler.h b/src/system/guest_stack_sampler.h
+new file mode 100644
+index 0000000..8fec26d
+--- /dev/null
++++ b/src/system/guest_stack_sampler.h
+@@ -0,0 +1,16 @@
++// Stack sampler for the guest thread that presents frames (VdSwap).
++// Off by default. With p2_stack_sample = true, once per frame (at most every
++// p2_stack_sample_ms) it reads the guest stack pointer r1 and appends the words above it
++// that point into guest code to sdmc:/switch/prototype-nx/logs/stack_samples.txt.
++// Map the addresses to sub_XXXXXXXX names from the generated code.
++#pragma once
++
++#include <cstdint>
++
++namespace rex::system {
++
++// Called from VdSwap_entry on the guest thread. guest_base is the host base of guest memory.
++void GuestStackSampleFrame(const uint8_t* guest_base, uint32_t r1, uint32_t stack_low,
++                           uint32_t stack_high);
++
++}  // namespace rex::system
